@@ -4,6 +4,8 @@
 
 Media Player that can play multiple videos/images at once in sync. Easily drag and drop media to rearrange them on a grid.
 
+Use online for free here (or download the release for local version) https://whatdreamscost.github.io/MediaSyncer/
+
 <b>Hotkeys:<b> SPACEBAR to Play/Pause, Left/Right Arrows to move to Previous/Next Frame. Drag to rearrange media.
 
 <b>PLEASE NOTE:<br><b>
