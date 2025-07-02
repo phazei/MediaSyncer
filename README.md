@@ -4,7 +4,7 @@
 
 Media Player that can play multiple videos/images at once in sync. Easily drag and drop media to rearrange them on a grid.
 
-<b>Hotkeys:<b> SPACEBAR to Play/Pause, Left/Right Arrows to move to Previous/Next Frame.
+<b>Hotkeys:<b> SPACEBAR to Play/Pause, Left/Right Arrows to move to Previous/Next Frame. Drag to rearrange media.
 
 <b>PLEASE NOTE:<br><b>
 This project was made using AI.<br>
