@@ -17,16 +17,26 @@ let isUpdatingLayout = false; // Flag to prevent recursive layout updates
 let isDragging = false;
 let draggedMedia = null; // The media element being dragged
 let hoveredMediaIndex = -1; // Index of media being hovered over
+let isPanning = false;
+let lastMouseX = 0, lastMouseY = 0;
+let isDraggingSlider = false; // To prevent canvas interaction when using sliders
 
 // Control variables
 let isLooping = true;
 let zoomLevel = 1.0;
+let panX = 0, panY = 0;
+let playbackRate = 1.0; // For playback speed
+const speedLevels = [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]; // Speed options
 
 // Theme and color variables
 let frameRateInput;
 let canvasBgColor, canvasTextColor, canvasBorderColor;
 const moonIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>`;
 const sunIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`;
+const speedIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
+const loopIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>`;
+// NEW: Help icon
+const helpIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
 
 
 // --- p5.js Setup Function ---
@@ -35,10 +45,10 @@ function setup() {
     canvas = createCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
     canvas.parent('canvas-container');
     
-    // Set up drag and drop functionality for files
     canvas.drop(handleFile);
     canvas.dragOver(() => select('#canvas-container').style('border-style', 'solid'));
     canvas.dragLeave(() => select('#canvas-container').style('border-style', 'dashed'));
+    canvas.mouseWheel(handleMouseWheel);
 
     // --- Control Event Listeners ---
     const playPauseBtn = select('#play-pause-btn');
@@ -49,15 +59,25 @@ function setup() {
     const clearAllBtn = select('#clear-all-btn');
     const colsInput = select('#cols-input');
     const rowsInput = select('#rows-input');
-    const loopToggle = select('#loop-toggle');
+    const loopBtn = select('#loop-btn');
     const zoomSlider = select('#zoom-slider');
     const importMediaBtn = select('#import-media-btn');
     const fileInput = select('#file-input');
     const themeToggleBtn = select('#theme-toggle-btn');
+    const helpBtn = select('#help-btn'); // NEW
     frameRateInput = select('#framerate-input');
+
+    // Speed control elements
+    const speedBtn = select('#speed-btn');
+    const speedMenu = select('#speed-menu');
+    const speedSlider = select('#speed-slider');
+    const speedControlWrapper = select('#speed-control-wrapper');
 
     // --- Initialize UI and Theme ---
     initializeTheme();
+    speedBtn.html(speedIcon); // Inject speed icon
+    loopBtn.html(loopIcon); // Inject loop icon
+    helpBtn.html(helpIcon); // NEW: Inject help icon
 
     // --- Assign Event Handlers ---
     importMediaBtn.mousePressed(() => fileInput.elt.click());
@@ -68,8 +88,12 @@ function setup() {
     prevFrameBtn.mousePressed(() => stepFrame(-1));
     autoLayoutBtn.mousePressed(autoLayout);
     clearAllBtn.mousePressed(clearAllMedia);
-    loopToggle.changed(toggleLooping);
+    loopBtn.mousePressed(toggleLooping);
     zoomSlider.input(updateZoom);
+    // NEW: Help button link
+    helpBtn.mousePressed(() => {
+        window.open('https://github.com/WhatDreamsCost/MediaSyncer', '_blank');
+    });
     
     colsInput.input(() => updateGridLayout('cols'));
     rowsInput.input(() => updateGridLayout('rows'));
@@ -81,6 +105,33 @@ function setup() {
     });
     seekSlider.input(handleSeek);
 
+    // Speed control event listeners
+    speedSlider.input(updatePlaybackSpeed);
+    
+    // Added listeners to sliders to prevent canvas dragging
+    speedSlider.mousePressed(() => { isDraggingSlider = true; });
+    zoomSlider.mousePressed(() => { isDraggingSlider = true; });
+    
+    // Toggles the speed menu visibility when the button is clicked
+    speedBtn.mousePressed(() => {
+        speedMenu.toggleClass('visible');
+    });
+
+    // Listener to close menu when clicking anywhere outside of it
+    document.body.addEventListener('click', (event) => {
+        if (!speedMenu.hasClass('visible')) {
+            return;
+        }
+        if (!speedControlWrapper.elt.contains(event.target)) {
+            speedMenu.removeClass('visible');
+        }
+    });
+
+    // Set initial active state for loop button
+    if (isLooping) {
+        loopBtn.addClass('active');
+    }
+
     updateControlsState();
 }
 
@@ -88,19 +139,25 @@ function setup() {
 function draw() {
     background(canvasBgColor);
 
+    if (isPanning) {
+        cursor('grabbing');
+    } else if (hoveredMediaIndex !== -1 && !isDragging) {
+        cursor('grab');
+    } else if (mediaElements.length === 0 && !isDragging) {
+        cursor('pointer');
+    } else {
+        cursor('arrow');
+    }
+
     updateHoveredMedia();
 
     if (mediaElements.length === 0 && !isDragging) {
-        cursor('pointer'); // Change cursor to indicate clickability
         textAlign(CENTER, CENTER);
         textSize(24);
         noStroke();
         fill(canvasTextColor);
-        // Updated text to reflect new functionality
         text('Drag & Drop or Click to Import Media', width / 2, height / 2);
         return;
-    } else {
-        cursor('arrow'); // Reset cursor to default
     }
 
     drawMediaGrid();
@@ -120,10 +177,7 @@ function draw() {
 
 // --- Theme Management ---
 function initializeTheme() {
-    // If a theme is saved as 'light', use light mode.
-    // Otherwise (if it's 'dark' or not set yet), default to dark mode.
     const isDarkMode = localStorage.getItem('theme') !== 'light';
-    
     if (isDarkMode) {
         document.body.classList.add('dark-mode');
     } else {
@@ -164,35 +218,41 @@ function updateCanvasColorScheme() {
 // --- Core Functions ---
 
 function clearAllMedia() {
-    // Stop playback if it's running
     if (isPlaying) {
         togglePlayPause();
     }
-
-    // Remove all media elements from the DOM
     for (let media of mediaElements) {
         media.elt.remove();
     }
-
-    // Clear arrays
     mediaElements = [];
     videos = [];
     gridLayout = [];
-
-    // Reset state variables
     masterVideo = null;
     hoveredMediaIndex = -1;
     isDragging = false;
     draggedMedia = null;
-    isPlaying = false; // Explicitly reset playing state
+    isPlaying = false;
+    
+    panX = 0;
+    panY = 0;
+    zoomLevel = 1.0;
+    select('#zoom-slider').value(1);
+    select('#zoom-display').html('1.0x');
+    
+    playbackRate = 1.0;
+    select('#speed-slider').value(4);
+    select('#speed-display').html('1.00x');
 
-    // Reset UI to initial state
+    // Reset loop state
+    isLooping = true;
+    select('#loop-btn').addClass('active');
+
     updateControlsState();
     select('#seek-slider').value(0);
     select('#timecode').html('00:00.00 / 00:00.00');
     select('#frame-counter').html('0 / 0');
     select('#play-pause-btn').html('Play');
-    autoLayout(); // This will also reset grid inputs
+    autoLayout();
 }
 
 
@@ -219,6 +279,7 @@ function handleFile(file) {
         const isFirstVideo = videos.length === 0;
         mediaEl = createVideo(file.data, () => {
              mediaEl.volume(0);
+             mediaEl.speed(playbackRate); // Set initial speed
              const masterTime = masterVideo ? masterVideo.time() : 0;
              const newVideoDuration = mediaEl.duration();
              mediaEl.time(min(masterTime, newVideoDuration));
@@ -243,7 +304,6 @@ function handleFile(file) {
     mediaEl.hide();
     mediaElements.push({ elt: mediaEl, type: file.type, name: file.name });
     autoLayout();
-    // Manually update controls state, especially for images, as findLongestVideo isn't called.
     updateControlsState();
     select('#canvas-container').style('border-style', 'dashed');
 }
@@ -251,7 +311,6 @@ function handleFile(file) {
 function findLongestVideo() {
     if (videos.length === 0) {
         masterVideo = null;
-        // If there are no videos, nothing can be playing.
         if (isPlaying) {
             isPlaying = false;
             select('#play-pause-btn').html('Play');
@@ -260,6 +319,18 @@ function findLongestVideo() {
         masterVideo = videos.reduce((a, b) => (a.duration() > b.duration() ? a : b));
     }
     updateControlsState();
+}
+
+// Function to handle playback speed changes
+function updatePlaybackSpeed() {
+    const sliderValue = parseInt(select('#speed-slider').value());
+    playbackRate = speedLevels[sliderValue];
+    
+    select('#speed-display').html(`${playbackRate.toFixed(2)}x`);
+    
+    for (const video of videos) {
+        video.speed(playbackRate);
+    }
 }
 
 function togglePlayPause() {
@@ -321,11 +392,60 @@ function stepFrame(direction) {
     });
 }
 
-function toggleLooping() { isLooping = this.checked(); }
+// Toggles looping state and starts playback if paused
+function toggleLooping() {
+    isLooping = !isLooping;
+    const loopBtn = select('#loop-btn');
+    if (isLooping) {
+        loopBtn.addClass('active');
+        // If looping is turned on and the video isn't playing, start it.
+        if (!isPlaying && masterVideo) {
+            togglePlayPause();
+        }
+    } else {
+        loopBtn.removeClass('active');
+    }
+}
+
 function updateZoom() {
     zoomLevel = this.value();
     select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);
+    constrainPan();
 }
+
+function constrainPan() {
+    if (mediaElements.length === 0) {
+        panX = 0;
+        panY = 0;
+        return;
+    }
+    const refMedia = mediaElements[0].elt;
+    const mediaW = refMedia.width;
+    const mediaH = refMedia.height;
+
+    if (mediaW === 0 || isNaN(mediaW)) {
+        panX = 0;
+        panY = 0;
+        return;
+    }
+
+    const sW = mediaW / zoomLevel;
+    const sH = mediaH / zoomLevel;
+    const maxPanX = (mediaW - sW) / 2;
+    const maxPanY = (mediaH - sH) / 2;
+
+    if (maxPanX >= 0) {
+        panX = constrain(panX, -maxPanX, maxPanX);
+    } else {
+        panX = 0;
+    }
+    if (maxPanY >= 0) {
+        panY = constrain(panY, -maxPanY, maxPanY);
+    } else {
+        panY = 0;
+    }
+}
+
 
 function drawMediaGrid() {
     let cols = gridCols > 0 ? gridCols : 1;
@@ -353,7 +473,7 @@ function drawMediaGrid() {
         const c = i % cols;
         if (isDragging && i === dropPreviewIndex) {
             noStroke();
-            fill(canvasTextColor.toString().replace(/,1\)$/, ',0.2)')); // semi-transparent
+            fill(canvasTextColor.toString().replace(/,1\)$/, ',0.2)'));
             rect(c * cellWidth, r * cellHeight, cellWidth, cellHeight, 8);
             continue;
         }
@@ -363,15 +483,20 @@ function drawMediaGrid() {
         const mediaW = elt.width;
         const mediaH = elt.height;
         if (mediaW > 0 && mediaH > 0) {
-            const sW = mediaW / zoomLevel, sH = mediaH / zoomLevel;
-            const sX = (mediaW - sW) / 2, sY = (mediaH - sH) / 2;
+            const sW = mediaW / zoomLevel;
+            const sH = mediaH / zoomLevel;
+            const sX = (mediaW - sW) / 2 + panX;
+            const sY = (mediaH - sH) / 2 + panY;
+            
             const cellAspect = cellWidth / cellHeight, mediaAspect = sW / sH;
             let drawW, drawH;
             if (mediaAspect > cellAspect) { drawW = cellWidth; drawH = cellWidth / mediaAspect; } 
             else { drawH = cellHeight; drawW = cellHeight * mediaAspect; }
             const x = c * cellWidth + (cellWidth - drawW) / 2;
             const y = r * cellHeight + (cellHeight - drawH) / 2;
+            
             image(elt, x, y, drawW, drawH, sX, sY, sW, sH);
+            
             const currentPos = { x, y, w: drawW, h: drawH };
             gridLayout[mediaIndex] = currentPos;
             if (mediaIndex === hoveredMediaIndex && !isDragging) drawHoverOverlay(media, currentPos);
@@ -414,7 +539,7 @@ function drawHoverOverlay(media, pos) {
 }
 
 function updateHoveredMedia() {
-    if (isDragging) { hoveredMediaIndex = -1; return; }
+    if (isDragging || isPanning) { hoveredMediaIndex = -1; return; }
     hoveredMediaIndex = -1;
     for (let i = 0; i < gridLayout.length; i++) {
         const pos = gridLayout[i];
@@ -426,7 +551,7 @@ function updateHoveredMedia() {
 }
 
 function updateGridLayout(source) {
-    if (isUpdatingLayout) return; // Prevent recursive updates
+    if (isUpdatingLayout) return;
     isUpdatingLayout = true;
 
     const colsInput = select('#cols-input');
@@ -544,16 +669,26 @@ function updateControlsState() {
     select('#next-frame-btn').elt.disabled = !hasVideo;
     select('#prev-frame-btn').elt.disabled = !hasVideo;
     select('#seek-slider').elt.disabled = !hasVideo;
+    select('#speed-btn').elt.disabled = !hasVideo;
+    select('#loop-btn').elt.disabled = !hasVideo;
     select('#clear-all-btn').elt.disabled = mediaElements.length === 0;
 }
 
 function mousePressed() {
-    // If no media is loaded, and the click is inside the canvas, trigger file import.
+    if (isDraggingSlider) return;
+
     if (mediaElements.length === 0 && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
         if (mouseButton === LEFT) {
             select('#file-input').elt.click();
         }
-        return; // Stop further execution for this click
+        return;
+    }
+    
+    if (mouseButton === CENTER && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
+        isPanning = true;
+        lastMouseX = mouseX;
+        lastMouseY = mouseY;
+        return;
     }
 
     if (mouseButton !== LEFT || isDragging) return;
@@ -569,7 +704,6 @@ function mousePressed() {
                 videos = videos.filter(v => v !== removedMedia.elt);
                 findLongestVideo();
             } else {
-                // If an image was removed, we still need to update the controls
                 updateControlsState();
             }
             removedMedia.elt.remove();
@@ -585,7 +719,32 @@ function mousePressed() {
     }
 }
 
+function mouseDragged() {
+    // Prevent canvas panning while dragging a UI slider
+    if (isDraggingSlider) {
+        return;
+    }
+    if (isPanning) {
+        panX -= (mouseX - lastMouseX);
+        panY -= (mouseY - lastMouseY);
+        
+        lastMouseX = mouseX;
+        lastMouseY = mouseY;
+        
+        constrainPan();
+        return false;
+    }
+}
+
 function mouseReleased() {
+    // Reset slider dragging flag on any mouse release
+    isDraggingSlider = false;
+
+    if (isPanning) {
+        isPanning = false;
+        return;
+    }
+
     if (!isDragging || !draggedMedia) { isDragging = false; return; }
     let cols = gridCols > 0 ? gridCols : 1;
     let rows = gridRows > 0 ? gridRows : 1;
@@ -606,16 +765,53 @@ function mouseReleased() {
     draggedMedia = null;
 }
 
-// --- Handles keyboard shortcuts ---
+function handleMouseWheel(event) {
+    if (mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
+        const zoomSpeed = 0.1;
+        const oldZoom = zoomLevel;
+        
+        if (event.deltaY > 0) {
+            zoomLevel -= zoomSpeed * oldZoom;
+        } else {
+            zoomLevel += zoomSpeed * oldZoom;
+        }
+
+        const zoomSlider = select('#zoom-slider');
+        const minZoom = parseFloat(zoomSlider.elt.min);
+        const maxZoom = parseFloat(zoomSlider.elt.max);
+        zoomLevel = constrain(zoomLevel, minZoom, maxZoom);
+
+        if (mediaElements.length > 0) {
+            const refMedia = mediaElements[0].elt;
+            const mediaW = refMedia.width;
+            const mediaH = refMedia.height;
+            if (mediaW > 0) {
+                const mouseWorldX = (panX + (mediaW - mediaW / oldZoom) / 2) + (mouseX / width) * (mediaW / oldZoom);
+                const mouseWorldY = (panY + (mediaH - mediaH / oldZoom) / 2) + (mouseY / height) * (mediaH / oldZoom);
+                
+                panX = mouseWorldX - (mouseX / width) * (mediaW / zoomLevel) - (mediaW - mediaW / zoomLevel) / 2;
+                panY = mouseWorldY - (mouseY / height) * (mediaH / zoomLevel) - (mediaH - mediaH / zoomLevel) / 2;
+            }
+        }
+
+
+        constrainPan();
+        
+        zoomSlider.value(zoomLevel);
+        select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);
+        
+        return false;
+    }
+}
+
+
 function keyPressed() {
-    // Prevent hotkeys from firing when typing in an input field
     if (document.activeElement.tagName === 'INPUT') {
         return;
     }
-
     if (keyCode === 32) { // Spacebar
         togglePlayPause();
-        return false; // Prevent default browser action (e.g., scrolling)
+        return false;
     } else if (keyCode === LEFT_ARROW) {
         stepFrame(-1);
     } else if (keyCode === RIGHT_ARROW) {
@@ -626,5 +822,5 @@ function keyPressed() {
 function windowResized() {
     let canvasContainer = document.getElementById('canvas-container');
     resizeCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
-    updateCanvasColorScheme();
+    updateCanvasColorScheme()
 }
