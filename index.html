@@ -31,18 +31,23 @@
         <div class="control-panel">
             <!-- Top Controls Row -->
             <div id="top-controls" class="controls-group">
-                <!-- Left-aligned layout controls -->
+                <!-- Left-aligned controls -->
                 <div class="left-controls">
-                     <div class="layout-controls">
-                        <label for="cols-input">Columns:</label>
-                        <input type="number" id="cols-input" min="1" value="">
-                    </div>
-                    <div class="layout-controls">
-                        <label for="rows-input">Rows:</label>
-                        <input type="number" id="rows-input" min="1" value="">
-                    </div>
-                    <button id="auto-layout-btn" class="btn">Auto</button>
+                    <!-- UPDATED: Clear buttons are now here -->
                     <button id="clear-all-btn" class="btn btn-danger">Clear All</button>
+                    <button id="clear-grid-btn" class="btn btn-danger">Clear Grid</button>
+                    <!-- Grid-specific layout controls -->
+                    <div class="grid-layout-controls">
+                        <div class="layout-controls">
+                            <label for="cols-input">Columns:</label>
+                            <input type="number" id="cols-input" min="1" value="">
+                        </div>
+                        <div class="layout-controls">
+                            <label for="rows-input">Rows:</label>
+                            <input type="number" id="rows-input" min="1" value="">
+                        </div>
+                        <button id="auto-layout-btn" class="btn">Auto</button>
+                    </div>
                 </div>
 
                 <!-- Centered playback controls -->
@@ -66,6 +71,7 @@
                 
                 <!-- Right-aligned zoom control -->
                 <div class="zoom-control">
+                    <button id="view-mode-btn" class="btn">Split View</button>
                     <label for="zoom-slider">Zoom:</label>
                     <input type="range" id="zoom-slider" class="slider" min="1" max="5" value="1" step="0.1">
                     <span id="zoom-display">1.0x</span>
@@ -88,7 +94,7 @@
                     <div id="timecode">00:00.00 / 00:00.00</div>
                     <div id="frame-counter">0 / 0</div>
                 </div>
-                <!-- UPDATED: Controls reordered and new help button added -->
+                <!-- Controls reordered and new help button added -->
                 <div class="right-controls-wrapper">
                     <div class="import-controls-wrapper">
                         <input type="file" id="file-input" multiple accept="video/*,image/*" style="display: none;">

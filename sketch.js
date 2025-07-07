@@ -1,11 +1,18 @@
 // --- p5.js Sketch ---
 
 let canvas;
-let mediaElements = []; // To store all loaded videos and images
-let videos = []; // To store only video elements for easy access
+// State for view mode
+let currentViewMode = 'grid'; // 'grid' or 'split'
+
+// Separate media arrays for each view mode
+let gridMediaElements = [];
+let gridVideos = [];
+let splitMediaElements = []; // Max 2 elements for left/right view
+let splitVideos = [];
+
 let isPlaying = false;
 let isSeeking = false;
-let masterVideo = null; // The video with the longest duration
+let masterVideo = null; // The video with the longest duration IN THE CURRENT VIEW
 
 // Layout variables
 let gridCols = 0;
@@ -19,7 +26,12 @@ let draggedMedia = null; // The media element being dragged
 let hoveredMediaIndex = -1; // Index of media being hovered over
 let isPanning = false;
 let lastMouseX = 0, lastMouseY = 0;
-let isDraggingSlider = false; // To prevent canvas interaction when using sliders
+let isDraggingSlider = false; // To prevent canvas interaction when using UI sliders
+
+// Split view interaction variables
+let isDraggingSplitSlider = false;
+let splitSliderPos = 0.5; // Position of the comparison slider (0 to 1)
+const splitSliderHandleWidth = 32; // Increased width of the draggable area for the slider
 
 // Control variables
 let isLooping = true;
@@ -30,12 +42,11 @@ const speedLevels = [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]; // Speed 
 
 // Theme and color variables
 let frameRateInput;
-let canvasBgColor, canvasTextColor, canvasBorderColor;
+let canvasBgColor, canvasTextColor, canvasBorderColor, accentColor; // UPDATED: Added accentColor
 const moonIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>`;
 const sunIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`;
 const speedIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
 const loopIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>`;
-// NEW: Help icon
 const helpIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
 
 
@@ -45,9 +56,20 @@ function setup() {
     canvas = createCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
     canvas.parent('canvas-container');
     
-    canvas.drop(handleFile);
-    canvas.dragOver(() => select('#canvas-container').style('border-style', 'solid'));
-    canvas.dragLeave(() => select('#canvas-container').style('border-style', 'dashed'));
+    const canvasElt = canvas.elt;
+    const canvasContainerElt = select('#canvas-container');
+    canvasElt.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        canvasContainerElt.addClass('dragging-over');
+    });
+    canvasElt.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        canvasContainerElt.removeClass('dragging-over');
+    });
+    canvasElt.addEventListener('drop', (e) => {
+        canvasContainerElt.removeClass('dragging-over');
+        handleNativeDrop(e);
+    });
     canvas.mouseWheel(handleMouseWheel);
 
     // --- Control Event Listeners ---
@@ -56,6 +78,7 @@ function setup() {
     const prevFrameBtn = select('#prev-frame-btn');
     const seekSlider = select('#seek-slider');
     const autoLayoutBtn = select('#auto-layout-btn');
+    const clearGridBtn = select('#clear-grid-btn');
     const clearAllBtn = select('#clear-all-btn');
     const colsInput = select('#cols-input');
     const rowsInput = select('#rows-input');
@@ -64,8 +87,9 @@ function setup() {
     const importMediaBtn = select('#import-media-btn');
     const fileInput = select('#file-input');
     const themeToggleBtn = select('#theme-toggle-btn');
-    const helpBtn = select('#help-btn'); // NEW
+    const helpBtn = select('#help-btn');
     frameRateInput = select('#framerate-input');
+    const viewModeBtn = select('#view-mode-btn');
 
     // Speed control elements
     const speedBtn = select('#speed-btn');
@@ -75,9 +99,9 @@ function setup() {
 
     // --- Initialize UI and Theme ---
     initializeTheme();
-    speedBtn.html(speedIcon); // Inject speed icon
-    loopBtn.html(loopIcon); // Inject loop icon
-    helpBtn.html(helpIcon); // NEW: Inject help icon
+    speedBtn.html(speedIcon);
+    loopBtn.html(loopIcon);
+    helpBtn.html(helpIcon);
 
     // --- Assign Event Handlers ---
     importMediaBtn.mousePressed(() => fileInput.elt.click());
@@ -87,51 +111,33 @@ function setup() {
     nextFrameBtn.mousePressed(() => stepFrame(1));
     prevFrameBtn.mousePressed(() => stepFrame(-1));
     autoLayoutBtn.mousePressed(autoLayout);
-    clearAllBtn.mousePressed(clearAllMedia);
+    clearGridBtn.mousePressed(clearGridMedia);
+    clearAllBtn.mousePressed(clearSplitMedia);
     loopBtn.mousePressed(toggleLooping);
     zoomSlider.input(updateZoom);
-    // NEW: Help button link
-    helpBtn.mousePressed(() => {
-        window.open('https://github.com/WhatDreamsCost/MediaSyncer', '_blank');
-    });
+    helpBtn.mousePressed(() => window.open('https://github.com/WhatDreamsCost/MediaSyncer', '_blank'));
+    viewModeBtn.mousePressed(toggleViewMode);
     
     colsInput.input(() => updateGridLayout('cols'));
     rowsInput.input(() => updateGridLayout('rows'));
 
     seekSlider.mousePressed(() => isSeeking = true);
-    seekSlider.mouseReleased(() => {
-        isSeeking = false;
-        handleSeek(); 
-    });
+    seekSlider.mouseReleased(() => { isSeeking = false; handleSeek(); });
     seekSlider.input(handleSeek);
 
-    // Speed control event listeners
     speedSlider.input(updatePlaybackSpeed);
-    
-    // Added listeners to sliders to prevent canvas dragging
     speedSlider.mousePressed(() => { isDraggingSlider = true; });
     zoomSlider.mousePressed(() => { isDraggingSlider = true; });
     
-    // Toggles the speed menu visibility when the button is clicked
-    speedBtn.mousePressed(() => {
-        speedMenu.toggleClass('visible');
-    });
+    speedBtn.mousePressed(() => speedMenu.toggleClass('visible'));
 
-    // Listener to close menu when clicking anywhere outside of it
     document.body.addEventListener('click', (event) => {
-        if (!speedMenu.hasClass('visible')) {
-            return;
-        }
-        if (!speedControlWrapper.elt.contains(event.target)) {
+        if (speedMenu.hasClass('visible') && !speedControlWrapper.elt.contains(event.target)) {
             speedMenu.removeClass('visible');
         }
     });
 
-    // Set initial active state for loop button
-    if (isLooping) {
-        loopBtn.addClass('active');
-    }
-
+    if (isLooping) loopBtn.addClass('active');
     updateControlsState();
 }
 
@@ -139,19 +145,327 @@ function setup() {
 function draw() {
     background(canvasBgColor);
 
-    if (isPanning) {
-        cursor('grabbing');
-    } else if (hoveredMediaIndex !== -1 && !isDragging) {
-        cursor('grab');
-    } else if (mediaElements.length === 0 && !isDragging) {
-        cursor('pointer');
+    if (currentViewMode === 'grid') {
+        drawGridView();
     } else {
-        cursor('arrow');
+        drawSplitView();
     }
+    
+    if (masterVideo && !isSeeking) {
+        updateSliderAndTime();
+    }
+}
+
+// --- View Mode Management ---
+
+function toggleViewMode() {
+    currentViewMode = (currentViewMode === 'grid') ? 'split' : 'grid';
+    
+    if (currentViewMode === 'split') {
+        document.body.classList.add('split-view-active');
+        select('#view-mode-btn').html('Grid View');
+    } else {
+        document.body.classList.remove('split-view-active');
+        select('#view-mode-btn').html('Split View');
+    }
+
+    panX = 0;
+    panY = 0;
+    zoomLevel = 1.0;
+    select('#zoom-slider').value(1);
+    select('#zoom-display').html('1.0x');
+    
+    findLongestVideo();
+    updateControlsState();
+}
+
+
+// --- Theme Management ---
+function initializeTheme() {
+    const isDarkMode = localStorage.getItem('theme') !== 'light';
+    if (isDarkMode) document.body.classList.add('dark-mode');
+    else document.body.classList.remove('dark-mode');
+    updateThemeUI();
+    updateCanvasColorScheme();
+}
+
+function toggleTheme() {
+    document.body.classList.toggle('dark-mode');
+    localStorage.setItem('theme', document.body.classList.contains('dark-mode') ? 'dark' : 'light');
+    updateThemeUI();
+    updateCanvasColorScheme();
+}
+
+function updateThemeUI() {
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    const themeToggleBtn = select('#theme-toggle-btn');
+    themeToggleBtn.html(isDarkMode ? sunIcon : moonIcon);
+    themeToggleBtn.attribute('title', isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode');
+}
+
+function updateCanvasColorScheme() {
+    let style = getComputedStyle(document.body);
+    canvasBgColor = color(style.getPropertyValue('--canvas-bg-p5').trim());
+    canvasTextColor = color(style.getPropertyValue('--text-secondary').trim());
+    canvasBorderColor = color(style.getPropertyValue('--canvas-border-p5').trim());
+    accentColor = color(style.getPropertyValue('--accent-primary').trim());
+    select('#canvas-container').style('border-color', canvasBorderColor.toString('#rrggbb'));
+}
+
+// --- Core Functions ---
+
+function clearGridMedia() {
+    if (isPlaying && currentViewMode === 'grid') togglePlayPause();
+    for (let media of gridMediaElements) {
+        media.elt.remove();
+    }
+    gridMediaElements = [];
+    gridVideos = [];
+    gridLayout = [];
+    
+    if (currentViewMode === 'grid') {
+        masterVideo = null;
+        updateControlsState();
+        select('#seek-slider').value(0);
+        select('#timecode').html('00:00.00 / 00:00.00');
+        select('#frame-counter').html('0 / 0');
+    }
+    autoLayout();
+}
+
+function clearSplitMedia() {
+    if (isPlaying && currentViewMode === 'split') togglePlayPause();
+    for (let media of splitMediaElements) {
+        if (media) media.elt.remove();
+    }
+    splitMediaElements = [];
+    splitVideos = [];
+    splitSliderPos = 0.5;
+
+    if (currentViewMode === 'split') {
+        masterVideo = null;
+        updateControlsState();
+        select('#seek-slider').value(0);
+        select('#timecode').html('00:00.00 / 00:00.00');
+        select('#frame-counter').html('0 / 0');
+    }
+}
+
+function handleNativeDrop(event) {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files);
+    const filesToProcess = files.map(createFileObject).filter(f => f);
+
+    if (currentViewMode === 'split' && filesToProcess.length > 0) {
+        if (filesToProcess.length === 1) {
+            handleFile(filesToProcess[0]);
+        } else {
+            handleFile({ ...filesToProcess[0], targetSlot: 0 });
+            handleFile({ ...filesToProcess[1], targetSlot: 1 });
+        }
+    } else {
+        for (const fileObject of filesToProcess) {
+            handleFile(fileObject);
+        }
+    }
+}
+
+function createFileObject(file) {
+    const fileType = file.type.startsWith('video/') ? 'video' : (file.type.startsWith('image/') ? 'image' : null);
+    if (!fileType) return null;
+    const fileUrl = URL.createObjectURL(file);
+    return { type: fileType, data: fileUrl, name: file.name };
+}
+
+function handleFileInput(event) {
+    const files = Array.from(event.target.files);
+    const filesToProcess = files.map(createFileObject).filter(f => f);
+
+    if (currentViewMode === 'split' && filesToProcess.length > 0) {
+        if (filesToProcess.length === 1) {
+            const targetSlot = !splitMediaElements[0] ? 0 : (!splitMediaElements[1] ? 1 : 0);
+            handleFile({ ...filesToProcess[0], targetSlot });
+        } else {
+            handleFile({ ...filesToProcess[0], targetSlot: 0 });
+            handleFile({ ...filesToProcess[1], targetSlot: 1 });
+        }
+    } else {
+        for (const fileObject of filesToProcess) {
+            handleFile(fileObject);
+        }
+    }
+
+    event.target.value = '';
+}
+
+function handleFile(file) {
+    if (!file) return;
+
+    let mediaEl;
+    const isFirstVideoInAnyView = gridVideos.length === 0 && splitVideos.length === 0;
+
+    const onVideoLoad = () => {
+        mediaEl.volume(0);
+        mediaEl.speed(playbackRate);
+        const masterTime = masterVideo ? masterVideo.time() : 0;
+        mediaEl.time(min(masterTime, mediaEl.duration()));
+        findLongestVideo();
+        if (isFirstVideoInAnyView && !isPlaying) {
+            togglePlayPause();
+        } else {
+            if (isPlaying && mediaEl.time() < mediaEl.duration()) mediaEl.play();
+            else mediaEl.pause();
+        }
+        updateSliderAndTime();
+    };
+
+    if (file.type === 'video') {
+        mediaEl = createVideo(file.data, onVideoLoad);
+    } else if (file.type === 'image') {
+        mediaEl = createImg(file.data, 'image');
+    } else {
+        select('#canvas-container').style('border-style', 'dashed');
+        return;
+    }
+
+    mediaEl.hide();
+    const newMediaObject = { elt: mediaEl, type: file.type, name: file.name };
+
+    if (currentViewMode === 'grid') {
+        gridMediaElements.push(newMediaObject);
+        if (file.type === 'video') gridVideos.push(mediaEl);
+        autoLayout();
+    } else {
+        let position;
+        if (file.targetSlot !== undefined) {
+            position = file.targetSlot;
+        } else {
+            const destRect = getSplitViewDestRect();
+            position = (mouseX < destRect.x + destRect.w * splitSliderPos) ? 0 : 1;
+        }
+
+        if (splitMediaElements[position]) {
+            const oldMedia = splitMediaElements[position];
+            if (oldMedia.type === 'video') {
+                splitVideos = splitVideos.filter(v => v !== oldMedia.elt);
+            }
+            oldMedia.elt.remove();
+        }
+        splitMediaElements[position] = newMediaObject;
+        if (file.type === 'video') {
+            splitVideos.push(mediaEl);
+        }
+    }
+    
+    findLongestVideo();
+    updateControlsState();
+}
+
+
+function findLongestVideo() {
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    
+    if (currentVideos.length === 0) {
+        masterVideo = null;
+        if (isPlaying) {
+            isPlaying = false;
+            select('#play-pause-btn').html('Play');
+        }
+    } else {
+        masterVideo = currentVideos.reduce((a, b) => (a.duration() > b.duration() ? a : b));
+    }
+    updateControlsState();
+}
+
+function updatePlaybackSpeed() {
+    playbackRate = speedLevels[parseInt(select('#speed-slider').value())];
+    select('#speed-display').html(`${playbackRate.toFixed(2)}x`);
+    [...gridVideos, ...splitVideos].forEach(video => video.speed(playbackRate));
+}
+
+function togglePlayPause() {
+    if (!masterVideo) return;
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    const frameDuration = 1 / (parseFloat(frameRateInput.value()) || 30);
+
+    if (!isPlaying && !isLooping && masterVideo.time() >= masterVideo.duration() - frameDuration) {
+        currentVideos.forEach(v => { v.time(0); v.play(); });
+        isPlaying = true;
+    } else {
+        isPlaying = !isPlaying;
+        if (isPlaying) currentVideos.forEach(v => { if (v.time() < v.duration()) v.play(); });
+        else currentVideos.forEach(v => v.pause());
+    }
+    select('#play-pause-btn').html(isPlaying ? 'Pause' : 'Play');
+}
+
+function handleSeek() {
+    if (!masterVideo) return;
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    const seekTime = (select('#seek-slider').value() / 1000) * masterVideo.duration();
+    currentVideos.forEach(v => v.pause());
+    let seekedCount = 0;
+    if (currentVideos.length === 0) { if (isPlaying) currentVideos.forEach(v => { if (v.time() < v.duration()) v.play(); }); return; }
+    currentVideos.forEach(v => {
+        v.elt.onseeked = () => {
+            seekedCount++;
+            v.elt.onseeked = null; 
+            if (seekedCount === currentVideos.length && isPlaying) {
+                currentVideos.forEach(v => { if (v.time() < v.duration()) v.play(); });
+            }
+        };
+        v.time(min(seekTime, v.duration()));
+    });
+}
+
+function stepFrame(direction) {
+    if (!masterVideo) return;
+    if (isPlaying) togglePlayPause();
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    const frameDuration = 1 / (parseFloat(frameRateInput.value()) || 30);
+    let newMasterTime = masterVideo.time() + (direction * frameDuration);
+    currentVideos.forEach(v => v.time(constrain(newMasterTime, 0, v.duration())));
+}
+
+function toggleLooping() {
+    isLooping = !isLooping;
+    select('#loop-btn').toggleClass('active', isLooping);
+    if (isLooping && !isPlaying && masterVideo) togglePlayPause();
+}
+
+function updateZoom() {
+    zoomLevel = this.value();
+    select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);
+    constrainPan();
+}
+
+function constrainPan() {
+    const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements).filter(Boolean);
+    if (currentMedia.length === 0) { panX = 0; panY = 0; return; }
+    
+    const refMedia = currentMedia[0].elt;
+    if (refMedia.width === 0 || isNaN(refMedia.width)) { panX = 0; panY = 0; return; }
+
+    const sW = refMedia.width / zoomLevel;
+    const sH = refMedia.height / zoomLevel;
+    const maxPanX = (refMedia.width - sW) / 2;
+    const maxPanY = (refMedia.height - sH) / 2;
+
+    panX = (maxPanX >= 0) ? constrain(panX, -maxPanX, maxPanX) : 0;
+    panY = (maxPanY >= 0) ? constrain(panY, -maxPanY, maxPanY) : 0;
+}
+
+// --- Drawing Functions ---
+
+function drawGridView() {
+    if (isPanning) cursor('grabbing');
+    else if (hoveredMediaIndex !== -1 && !isDragging) cursor('grab');
+    else if (gridMediaElements.length === 0 && !isDragging) cursor('pointer');
+    else cursor('arrow');
 
     updateHoveredMedia();
 
-    if (mediaElements.length === 0 && !isDragging) {
+    if (gridMediaElements.length === 0 && !isDragging) {
         textAlign(CENTER, CENTER);
         textSize(24);
         noStroke();
@@ -165,284 +479,110 @@ function draw() {
     if (isDragging && draggedMedia) {
         const { elt } = draggedMedia;
         const aspect = elt.width / elt.height;
-        const previewWidth = 150; 
-        const previewHeight = previewWidth / aspect;
-        image(elt, mouseX - previewWidth / 2, mouseY - previewHeight / 2, previewWidth, previewHeight);
-    }
-    
-    if (masterVideo && !isSeeking) {
-        updateSliderAndTime();
+        image(elt, mouseX - 75, mouseY - (75 / aspect) / 2, 150, 150 / aspect);
     }
 }
 
-// --- Theme Management ---
-function initializeTheme() {
-    const isDarkMode = localStorage.getItem('theme') !== 'light';
-    if (isDarkMode) {
-        document.body.classList.add('dark-mode');
-    } else {
-        document.body.classList.remove('dark-mode');
-    }
-    updateThemeUI();
-    updateCanvasColorScheme();
-}
+function getSplitViewDestRect() {
+    const refMedia = splitMediaElements[0] || splitMediaElements[1];
+    let destRect = { x: 0, y: 0, w: width, h: height };
 
-function toggleTheme() {
-    document.body.classList.toggle('dark-mode');
-    const isDarkMode = document.body.classList.contains('dark-mode');
-    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
-    updateThemeUI();
-    updateCanvasColorScheme();
-}
-
-function updateThemeUI() {
-    const isDarkMode = document.body.classList.contains('dark-mode');
-    const themeToggleBtn = select('#theme-toggle-btn');
-    if (isDarkMode) {
-        themeToggleBtn.html(sunIcon);
-        themeToggleBtn.attribute('title', 'Switch to Light Mode');
-    } else {
-        themeToggleBtn.html(moonIcon);
-        themeToggleBtn.attribute('title', 'Switch to Dark Mode');
-    }
-}
-
-function updateCanvasColorScheme() {
-    let style = getComputedStyle(document.body);
-    canvasBgColor = color(style.getPropertyValue('--canvas-bg-p5').trim());
-    canvasTextColor = color(style.getPropertyValue('--text-secondary').trim());
-    canvasBorderColor = color(style.getPropertyValue('--canvas-border-p5').trim());
-    select('#canvas-container').style('border-color', canvasBorderColor.toString('#rrggbb'));
-}
-
-// --- Core Functions ---
-
-function clearAllMedia() {
-    if (isPlaying) {
-        togglePlayPause();
-    }
-    for (let media of mediaElements) {
-        media.elt.remove();
-    }
-    mediaElements = [];
-    videos = [];
-    gridLayout = [];
-    masterVideo = null;
-    hoveredMediaIndex = -1;
-    isDragging = false;
-    draggedMedia = null;
-    isPlaying = false;
-    
-    panX = 0;
-    panY = 0;
-    zoomLevel = 1.0;
-    select('#zoom-slider').value(1);
-    select('#zoom-display').html('1.0x');
-    
-    playbackRate = 1.0;
-    select('#speed-slider').value(4);
-    select('#speed-display').html('1.00x');
-
-    // Reset loop state
-    isLooping = true;
-    select('#loop-btn').addClass('active');
-
-    updateControlsState();
-    select('#seek-slider').value(0);
-    select('#timecode').html('00:00.00 / 00:00.00');
-    select('#frame-counter').html('0 / 0');
-    select('#play-pause-btn').html('Play');
-    autoLayout();
-}
-
-
-function handleFileInput(event) {
-    const files = event.target.files;
-    for (const file of files) {
-        let fileType;
-        if (file.type.startsWith('video/')) fileType = 'video';
-        else if (file.type.startsWith('image/')) fileType = 'image';
-        else {
-            console.log('Unsupported file type:', file.type);
-            continue;
+    if (refMedia && refMedia.elt.width > 0 && refMedia.elt.height > 0) {
+        const mediaAspect = refMedia.elt.width / refMedia.elt.height;
+        const canvasAspect = width / height;
+        if (mediaAspect > canvasAspect) {
+            destRect.w = width;
+            destRect.h = width / mediaAspect;
+            destRect.x = 0;
+            destRect.y = (height - destRect.h) / 2;
+        } else {
+            destRect.h = height;
+            destRect.w = height * mediaAspect;
+            destRect.y = 0;
+            destRect.x = (width - destRect.w) / 2;
         }
-        const fileUrl = URL.createObjectURL(file);
-        const mockP5File = { type: fileType, data: fileUrl, name: file.name };
-        handleFile(mockP5File);
     }
-    event.target.value = '';
+    return destRect;
 }
 
-function handleFile(file) {
-    let mediaEl;
-    if (file.type === 'video') {
-        const isFirstVideo = videos.length === 0;
-        mediaEl = createVideo(file.data, () => {
-             mediaEl.volume(0);
-             mediaEl.speed(playbackRate); // Set initial speed
-             const masterTime = masterVideo ? masterVideo.time() : 0;
-             const newVideoDuration = mediaEl.duration();
-             mediaEl.time(min(masterTime, newVideoDuration));
-             findLongestVideo();
-             if (isFirstVideo) {
-                 togglePlayPause();
-             } else {
-                 if (isPlaying && mediaEl.time() < newVideoDuration) mediaEl.play();
-                 else mediaEl.pause();
-             }
-             updateSliderAndTime();
-        });
-        videos.push(mediaEl);
-    } else if (file.type === 'image') {
-        mediaEl = createImg(file.data, 'image');
-    } else {
-        console.log('Unsupported file type:', file.type);
-        select('#canvas-container').style('border-style', 'dashed');
-        return;
+function drawSplitView() {
+    const destRect = getSplitViewDestRect();
+    const sliderDrawX = destRect.x + destRect.w * splitSliderPos;
+    const isHoveringSlider = mouseX > sliderDrawX - splitSliderHandleWidth / 2 && mouseX < sliderDrawX + splitSliderHandleWidth / 2;
+    const bothMediaLoaded = splitMediaElements[0] && splitMediaElements[1];
+
+    if (isDraggingSplitSlider) cursor('grabbing');
+    else if (isPanning) cursor('grabbing');
+    else if (isHoveringSlider && bothMediaLoaded) cursor('ew-resize');
+    else if (splitMediaElements.filter(Boolean).length < 2) cursor('pointer');
+    else cursor('arrow');
+
+    const mediaLeft = splitMediaElements[0];
+    const mediaRight = splitMediaElements[1];
+    const placeholderText = "Drag & Drop or Click to Import Media";
+
+    if (mediaRight) {
+        drawMediaInSplit(mediaRight, 'right', destRect);
     }
-
-    mediaEl.hide();
-    mediaElements.push({ elt: mediaEl, type: file.type, name: file.name });
-    autoLayout();
-    updateControlsState();
-    select('#canvas-container').style('border-style', 'dashed');
-}
-
-function findLongestVideo() {
-    if (videos.length === 0) {
-        masterVideo = null;
-        if (isPlaying) {
-            isPlaying = false;
-            select('#play-pause-btn').html('Play');
-        }
-    } else {
-        masterVideo = videos.reduce((a, b) => (a.duration() > b.duration() ? a : b));
-    }
-    updateControlsState();
-}
-
-// Function to handle playback speed changes
-function updatePlaybackSpeed() {
-    const sliderValue = parseInt(select('#speed-slider').value());
-    playbackRate = speedLevels[sliderValue];
     
-    select('#speed-display').html(`${playbackRate.toFixed(2)}x`);
+    if (mediaLeft) {
+        drawMediaInSplit(mediaLeft, 'left', destRect);
+    }
     
-    for (const video of videos) {
-        video.speed(playbackRate);
+    if (!mediaLeft) {
+        textAlign(CENTER, CENTER);
+        textSize(18);
+        noStroke();
+        fill(canvasTextColor);
+        text(placeholderText, (destRect.x + sliderDrawX) / 2, destRect.y + destRect.h / 2);
     }
+    
+    if (!mediaRight) {
+        textAlign(CENTER, CENTER);
+        textSize(18);
+        noStroke();
+        fill(canvasTextColor);
+        text(placeholderText, sliderDrawX + (destRect.x + destRect.w - sliderDrawX) / 2, destRect.y + destRect.h / 2);
+    }
+
+    accentColor.setAlpha(220);
+    stroke(accentColor);
+    strokeWeight(2);
+    line(sliderDrawX, destRect.y, sliderDrawX, destRect.y + destRect.h);
+    noStroke();
+    fill(accentColor);
+    circle(sliderDrawX, destRect.y + destRect.h / 2, 12);
 }
 
-function togglePlayPause() {
-    if (!masterVideo) return;
-    const masterTime = masterVideo.time();
-    const duration = masterVideo.duration();
-    const frameRate = parseFloat(frameRateInput.value()) || 30;
-    const frameDuration = 1 / frameRate;
+function drawMediaInSplit(media, side, destRect) {
+    const { elt } = media;
+    if (!elt || elt.width === 0 || elt.height === 0) return;
 
-    if (!isPlaying && !isLooping && masterTime >= duration - frameDuration) {
-        videos.forEach(v => { v.time(0); v.play(); });
-        isPlaying = true;
-        select('#play-pause-btn').html('Pause');
-        return;
-    }
+    const sW = elt.width / zoomLevel;
+    const sH = elt.height / zoomLevel;
+    const sX = (elt.width - sW) / 2 + panX;
+    const sY = (elt.height - sH) / 2 + panY;
 
-    isPlaying = !isPlaying;
-    if (isPlaying) {
-        videos.forEach(v => { if (v.time() < v.duration()) v.play(); });
-        select('#play-pause-btn').html('Pause');
-    } else {
-        videos.forEach(v => v.pause());
-        select('#play-pause-btn').html('Play');
-    }
-}
+    if (side === 'left') {
+        const dX = destRect.x;
+        const dY = destRect.y;
+        const dW = destRect.w * splitSliderPos;
+        const dH = destRect.h;
+        
+        const sW_clipped = sW * splitSliderPos;
+        
+        if (dW > 0) image(elt, dX, dY, dW, dH, sX, sY, sW_clipped, sH);
 
-function handleSeek() {
-    if (!masterVideo) return;
-    const duration = masterVideo.duration();
-    if (isNaN(duration)) return;
-    const seekTime = (select('#seek-slider').value() / 1000) * duration;
-    videos.forEach(v => v.pause());
-    let seekedCount = 0;
-    const totalVideos = videos.length;
-    const onAllSeeked = () => {
-        if (isPlaying) videos.forEach(v => { if (v.time() < v.duration()) v.play(); });
-    };
-    if (totalVideos === 0) { onAllSeeked(); return; }
-    videos.forEach(v => {
-        const newTime = min(seekTime, v.duration());
-        v.elt.onseeked = () => {
-            seekedCount++;
-            v.elt.onseeked = null; 
-            if (seekedCount === totalVideos) onAllSeeked();
-        };
-        v.time(newTime);
-    });
-}
+    } else { // side === 'right'
+        const dX = destRect.x + destRect.w * splitSliderPos;
+        const dY = destRect.y;
+        const dW = destRect.w * (1 - splitSliderPos);
+        const dH = destRect.h;
 
-function stepFrame(direction) {
-    if (!masterVideo) return;
-    if (isPlaying) togglePlayPause();
-    const frameRate = parseFloat(frameRateInput.value()) || 30;
-    const frameDuration = 1 / frameRate;
-    let newMasterTime = masterVideo.time() + (direction * frameDuration);
-    videos.forEach(v => {
-        const newTime = constrain(newMasterTime, 0, v.duration());
-        v.time(newTime);
-    });
-}
+        const sX_offset = sW * splitSliderPos;
+        const sW_clipped = sW * (1 - splitSliderPos);
 
-// Toggles looping state and starts playback if paused
-function toggleLooping() {
-    isLooping = !isLooping;
-    const loopBtn = select('#loop-btn');
-    if (isLooping) {
-        loopBtn.addClass('active');
-        // If looping is turned on and the video isn't playing, start it.
-        if (!isPlaying && masterVideo) {
-            togglePlayPause();
-        }
-    } else {
-        loopBtn.removeClass('active');
-    }
-}
-
-function updateZoom() {
-    zoomLevel = this.value();
-    select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);
-    constrainPan();
-}
-
-function constrainPan() {
-    if (mediaElements.length === 0) {
-        panX = 0;
-        panY = 0;
-        return;
-    }
-    const refMedia = mediaElements[0].elt;
-    const mediaW = refMedia.width;
-    const mediaH = refMedia.height;
-
-    if (mediaW === 0 || isNaN(mediaW)) {
-        panX = 0;
-        panY = 0;
-        return;
-    }
-
-    const sW = mediaW / zoomLevel;
-    const sH = mediaH / zoomLevel;
-    const maxPanX = (mediaW - sW) / 2;
-    const maxPanY = (mediaH - sH) / 2;
-
-    if (maxPanX >= 0) {
-        panX = constrain(panX, -maxPanX, maxPanX);
-    } else {
-        panX = 0;
-    }
-    if (maxPanY >= 0) {
-        panY = constrain(panY, -maxPanY, maxPanY);
-    } else {
-        panY = 0;
+        if (dW > 0) image(elt, dX, dY, dW, dH, sX + sX_offset, sY, sW_clipped, sH);
     }
 }
 
@@ -451,7 +591,7 @@ function drawMediaGrid() {
     let cols = gridCols > 0 ? gridCols : 1;
     let rows = gridRows > 0 ? gridRows : 1;
     if (gridCols === 0 || gridRows === 0) {
-        const count = mediaElements.length + (isDragging ? 1 : 0);
+        const count = gridMediaElements.length + (isDragging ? 1 : 0);
         const layout = calculateBestGrid(count, width / height);
         cols = layout.cols;
         rows = layout.rows;
@@ -462,9 +602,7 @@ function drawMediaGrid() {
     const cellHeight = height / rows;
     let dropPreviewIndex = -1;
     if (isDragging) {
-        const hoverCol = floor(mouseX / cellWidth);
-        const hoverRow = floor(mouseY / cellHeight);
-        dropPreviewIndex = hoverCol + hoverRow * cols;
+        dropPreviewIndex = floor(mouseX / cellWidth) + floor(mouseY / cellHeight) * cols;
     }
     gridLayout = [];
     let mediaIndex = 0;
@@ -477,21 +615,18 @@ function drawMediaGrid() {
             rect(c * cellWidth, r * cellHeight, cellWidth, cellHeight, 8);
             continue;
         }
-        if (mediaIndex >= mediaElements.length) continue;
-        const media = mediaElements[mediaIndex];
+        if (mediaIndex >= gridMediaElements.length) continue;
+        const media = gridMediaElements[mediaIndex];
         const { elt } = media;
-        const mediaW = elt.width;
-        const mediaH = elt.height;
-        if (mediaW > 0 && mediaH > 0) {
-            const sW = mediaW / zoomLevel;
-            const sH = mediaH / zoomLevel;
-            const sX = (mediaW - sW) / 2 + panX;
-            const sY = (mediaH - sH) / 2 + panY;
+        if (elt.width > 0 && elt.height > 0) {
+            const sW = elt.width / zoomLevel;
+            const sH = elt.height / zoomLevel;
+            const sX = (elt.width - sW) / 2 + panX;
+            const sY = (elt.height - sH) / 2 + panY;
             
             const cellAspect = cellWidth / cellHeight, mediaAspect = sW / sH;
-            let drawW, drawH;
-            if (mediaAspect > cellAspect) { drawW = cellWidth; drawH = cellWidth / mediaAspect; } 
-            else { drawH = cellHeight; drawW = cellHeight * mediaAspect; }
+            let drawW = (mediaAspect > cellAspect) ? cellWidth : cellHeight * mediaAspect;
+            let drawH = (mediaAspect > cellAspect) ? cellWidth / mediaAspect : cellHeight;
             const x = c * cellWidth + (cellWidth - drawW) / 2;
             const y = r * cellHeight + (cellHeight - drawH) / 2;
             
@@ -511,35 +646,32 @@ function drawHoverOverlay(media, pos) {
     push();
     textAlign(LEFT, TOP);
     textSize(12);
-    const maxTextWidth = pos.w - xButtonSize - (textPadding * 3);
     let displayText = media.name;
-    if (textWidth(displayText) > maxTextWidth) {
-        while (textWidth(displayText + '...') > maxTextWidth && displayText.length > 0) displayText = displayText.slice(0, -1);
+    if (textWidth(displayText) > pos.w - xButtonSize - (textPadding * 3)) {
+        while (textWidth(displayText + '...') > pos.w - xButtonSize - (textPadding * 3) && displayText.length > 0) {
+            displayText = displayText.slice(0, -1);
+        }
         displayText += '...';
     }
     const textW = textWidth(displayText) + textPadding * 2;
-    const textH = 14 + textPadding * 2;
-    noStroke();
     fill(0, 0, 0, 180);
-    rect(pos.x, pos.y, textW, textH, 4, 0, 4, 0);
+    noStroke();
+    rect(pos.x, pos.y, textW, 14 + textPadding * 2, 4, 0, 4, 0);
     fill(255);
     text(displayText, pos.x + textPadding, pos.y + textPadding + 2);
-    pop();
-    push();
+    
     const xButtonX = pos.x + pos.w - xButtonSize;
-    const xButtonY = pos.y;
     fill(0, 0, 0, 180);
-    noStroke();
-    rect(xButtonX, xButtonY, xButtonSize, xButtonSize, 0, 4, 0, 4);
+    rect(xButtonX, pos.y, xButtonSize, xButtonSize, 0, 4, 0, 4);
     fill(255);
     textAlign(CENTER, CENTER);
     textSize(18);
-    text('×', xButtonX + xButtonSize / 2, xButtonY + xButtonSize / 2);
+    text('×', xButtonX + xButtonSize / 2, pos.y + xButtonSize / 2);
     pop();
 }
 
 function updateHoveredMedia() {
-    if (isDragging || isPanning) { hoveredMediaIndex = -1; return; }
+    if (isDragging || isPanning || currentViewMode !== 'grid') { hoveredMediaIndex = -1; return; }
     hoveredMediaIndex = -1;
     for (let i = 0; i < gridLayout.length; i++) {
         const pos = gridLayout[i];
@@ -550,44 +682,29 @@ function updateHoveredMedia() {
     }
 }
 
+// --- Layout and Control Updates ---
+
 function updateGridLayout(source) {
     if (isUpdatingLayout) return;
     isUpdatingLayout = true;
-
-    const colsInput = select('#cols-input');
-    const rowsInput = select('#rows-input');
-    const numMedia = mediaElements.length;
-
-    let cols = parseInt(colsInput.value());
-    let rows = parseInt(rowsInput.value());
+    const numMedia = gridMediaElements.length;
+    let cols = parseInt(select('#cols-input').value());
+    let rows = parseInt(select('#rows-input').value());
 
     if (numMedia === 0) {
         gridCols = !isNaN(cols) && cols > 0 ? cols : 0;
         gridRows = !isNaN(rows) && rows > 0 ? rows : 0;
-        isUpdatingLayout = false;
-        return;
+    } else if (source === 'cols' && !isNaN(cols) && cols > 0) {
+        gridCols = cols;
+        gridRows = Math.ceil(numMedia / cols);
+        select('#rows-input').value(gridRows);
+    } else if (source === 'rows' && !isNaN(rows) && rows > 0) {
+        gridRows = rows;
+        gridCols = Math.ceil(numMedia / rows);
+        select('#cols-input').value(gridCols);
+    } else {
+        autoLayout();
     }
-
-    if (source === 'cols') {
-        if (!isNaN(cols) && cols > 0) {
-            const newRows = Math.ceil(numMedia / cols);
-            rowsInput.value(newRows);
-            gridCols = cols;
-            gridRows = newRows;
-        } else {
-            autoLayout();
-        }
-    } else if (source === 'rows') {
-        if (!isNaN(rows) && rows > 0) {
-            const newCols = Math.ceil(numMedia / rows);
-            colsInput.value(newCols);
-            gridCols = newCols;
-            gridRows = rows;
-        } else {
-            autoLayout();
-        }
-    }
-
     isUpdatingLayout = false;
 }
 
@@ -604,8 +721,7 @@ function calculateBestGrid(n, targetAspect) {
     let minDiff = Infinity;
     for (let c = 1; c <= n; c++) {
         let r = Math.ceil(n / c);
-        let aspect = (c / r);
-        let diff = Math.abs(aspect - targetAspect);
+        let diff = Math.abs((c / r) - targetAspect);
         if (diff < minDiff) { minDiff = diff; bestLayout = { cols: c, rows: r }; }
     }
     return bestLayout;
@@ -614,73 +730,74 @@ function calculateBestGrid(n, targetAspect) {
 function updateSliderAndTime() {
     if (!masterVideo || isSeeking) return;
     const duration = masterVideo.duration();
-    let currentTime = masterVideo.time();
     if (isNaN(duration) || duration === 0) return;
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
     const frameRate = parseFloat(frameRateInput.value()) || 30;
-    const frameDuration = 1 / frameRate;
-    if (currentTime >= duration - frameDuration) {
+    
+    if (masterVideo.time() >= duration - (1 / frameRate)) {
         if (isLooping) {
             isSeeking = true;
-            videos.forEach(v => v.pause());
+            currentVideos.forEach(v => v.pause());
             let seekedCount = 0;
-            const totalVideos = videos.length;
-            const onAllSeeked = () => {
-                if (isPlaying) videos.forEach(v => v.play());
-                isSeeking = false;
-            };
-            if (totalVideos === 0) { isSeeking = false; return; }
-            videos.forEach(v => {
+            if (currentVideos.length === 0) { isSeeking = false; return; }
+            currentVideos.forEach(v => {
                 v.elt.onseeked = () => {
                     seekedCount++;
                     v.elt.onseeked = null;
-                    if (seekedCount === totalVideos) onAllSeeked();
+                    if (seekedCount === currentVideos.length) {
+                        if (isPlaying) currentVideos.forEach(v => v.play());
+                        isSeeking = false;
+                    }
                 };
                 v.time(0);
             });
             return;
         } else {
             if (isPlaying) togglePlayPause();
-            videos.forEach(v => v.time(v.duration()));
+            currentVideos.forEach(v => v.time(v.duration()));
         }
     } else if (isPlaying) {
-        videos.forEach(v => {
-            if (v !== masterVideo && currentTime >= v.duration() && !v.elt.paused) {
+        currentVideos.forEach(v => {
+            if (v !== masterVideo && v.time() >= v.duration() && !v.elt.paused) {
                 v.pause(); v.time(v.duration());
             }
         });
     }
-    const currentMasterTime = masterVideo.time();
-    select('#seek-slider').value((currentMasterTime / duration) * 1000);
-    select('#timecode').html(`${formatTime(currentMasterTime)} / ${formatTime(duration)}`);
-    select('#frame-counter').html(`${Math.round(currentMasterTime * frameRate)} / ${Math.round(duration * frameRate)}`);
+    
+    const currentTime = masterVideo.time();
+    select('#seek-slider').value((currentTime / duration) * 1000);
+    select('#timecode').html(`${formatTime(currentTime)} / ${formatTime(duration)}`);
+    select('#frame-counter').html(`${Math.round(currentTime * frameRate)} / ${Math.round(duration * frameRate)}`);
 }
 
 function formatTime(time) {
     if (isNaN(time) || time === Infinity) return "00:00.00";
-    const minutes = Math.floor(time / 60);
-    const seconds = Math.floor(time % 60);
-    const hundredths = Math.floor((time % 1) * 100);
-    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}`;
+    return `${String(Math.floor(time/60)).padStart(2,'0')}:${String(Math.floor(time%60)).padStart(2,'0')}.${String(Math.floor((time%1)*100)).padStart(2,'0')}`;
 }
 
 function updateControlsState() {
+    const hasGridMedia = gridMediaElements.length > 0;
+    const hasSplitMedia = splitMediaElements.filter(Boolean).length > 0;
     const hasVideo = masterVideo !== null;
+
     select('#play-pause-btn').elt.disabled = !hasVideo;
     select('#next-frame-btn').elt.disabled = !hasVideo;
     select('#prev-frame-btn').elt.disabled = !hasVideo;
     select('#seek-slider').elt.disabled = !hasVideo;
     select('#speed-btn').elt.disabled = !hasVideo;
     select('#loop-btn').elt.disabled = !hasVideo;
-    select('#clear-all-btn').elt.disabled = mediaElements.length === 0;
+    select('#clear-grid-btn').elt.disabled = !hasGridMedia;
+    select('#clear-all-btn').elt.disabled = !hasSplitMedia;
 }
+
+// --- Mouse and Keyboard Interaction ---
 
 function mousePressed() {
     if (isDraggingSlider) return;
-
-    if (mediaElements.length === 0 && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
-        if (mouseButton === LEFT) {
-            select('#file-input').elt.click();
-        }
+    const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements);
+    
+    if (currentMedia.filter(Boolean).length === 0 && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
+        if (mouseButton === LEFT) select('#file-input').elt.click();
         return;
     }
     
@@ -693,134 +810,100 @@ function mousePressed() {
 
     if (mouseButton !== LEFT || isDragging) return;
 
-    if (hoveredMediaIndex !== -1) {
-        const pos = gridLayout[hoveredMediaIndex];
-        const xButtonSize = 24;
-        const xButtonX = pos.x + pos.w - xButtonSize;
-        const xButtonY = pos.y;
-        if (mouseX > xButtonX && mouseX < xButtonX + xButtonSize && mouseY > xButtonY && mouseY < xButtonY + xButtonSize) {
-            const removedMedia = mediaElements.splice(hoveredMediaIndex, 1)[0];
-            if (removedMedia.type === 'video') {
-                videos = videos.filter(v => v !== removedMedia.elt);
-                findLongestVideo();
-            } else {
-                updateControlsState();
-            }
-            removedMedia.elt.remove();
-            hoveredMediaIndex = -1;
-            autoLayout();
-            return;
+    if (currentViewMode === 'split') {
+        const destRect = getSplitViewDestRect();
+        const sliderDrawX = destRect.x + destRect.w * splitSliderPos;
+        if (splitMediaElements[0] && splitMediaElements[1] && mouseX > sliderDrawX - splitSliderHandleWidth / 2 && mouseX < sliderDrawX + splitSliderHandleWidth / 2 && mouseY > destRect.y && mouseY < destRect.y + destRect.h) {
+            isDraggingSplitSlider = true;
         }
-    }
-    
-    if (hoveredMediaIndex !== -1) {
-        isDragging = true;
-        draggedMedia = mediaElements.splice(hoveredMediaIndex, 1)[0];
+    } else { // Grid view logic
+        if (hoveredMediaIndex !== -1) {
+            const pos = gridLayout[hoveredMediaIndex];
+            const xButtonSize = 24;
+            if (mouseX > pos.x + pos.w - xButtonSize && mouseX < pos.x + pos.w && mouseY > pos.y && mouseY < pos.y + xButtonSize) {
+                const removedMedia = gridMediaElements.splice(hoveredMediaIndex, 1)[0];
+                if (removedMedia.type === 'video') gridVideos = gridVideos.filter(v => v !== removedMedia.elt);
+                removedMedia.elt.remove();
+                findLongestVideo();
+                updateControlsState();
+                hoveredMediaIndex = -1;
+                autoLayout();
+                return;
+            }
+        }
+        if (hoveredMediaIndex !== -1) {
+            isDragging = true;
+            draggedMedia = gridMediaElements.splice(hoveredMediaIndex, 1)[0];
+        }
     }
 }
 
 function mouseDragged() {
-    // Prevent canvas panning while dragging a UI slider
-    if (isDraggingSlider) {
-        return;
-    }
+    if (isDraggingSlider) return;
     if (isPanning) {
         panX -= (mouseX - lastMouseX);
         panY -= (mouseY - lastMouseY);
-        
         lastMouseX = mouseX;
         lastMouseY = mouseY;
-        
         constrainPan();
         return false;
+    }
+    if (isDraggingSplitSlider) {
+        const destRect = getSplitViewDestRect();
+        splitSliderPos = constrain((mouseX - destRect.x) / destRect.w, 0, 1);
     }
 }
 
 function mouseReleased() {
-    // Reset slider dragging flag on any mouse release
     isDraggingSlider = false;
+    isPanning = false;
+    isDraggingSplitSlider = false;
 
-    if (isPanning) {
-        isPanning = false;
-        return;
+    if (currentViewMode === 'grid' && isDragging && draggedMedia) {
+        let cols = gridCols > 0 ? gridCols : calculateBestGrid(gridMediaElements.length + 1, width / height).cols;
+        const cellWidth = width / cols;
+        const cellHeight = height / (Math.ceil((gridMediaElements.length + 1) / cols));
+        const targetIndex = min(floor(mouseX / cellWidth) + floor(mouseY / cellHeight) * cols, gridMediaElements.length);
+        gridMediaElements.splice(targetIndex, 0, draggedMedia);
     }
-
-    if (!isDragging || !draggedMedia) { isDragging = false; return; }
-    let cols = gridCols > 0 ? gridCols : 1;
-    let rows = gridRows > 0 ? gridRows : 1;
-    if (gridCols === 0 || gridRows === 0) {
-        const count = mediaElements.length + 1;
-        const layout = calculateBestGrid(count, width / height);
-        cols = layout.cols;
-        rows = layout.rows;
-    }
-    const cellWidth = width / cols;
-    const cellHeight = height / rows;
-    const hoverCol = constrain(floor(mouseX / cellWidth), 0, cols - 1);
-    const hoverRow = constrain(floor(mouseY / cellHeight), 0, rows - 1);
-    let targetIndex = hoverCol + hoverRow * cols;
-    targetIndex = min(targetIndex, mediaElements.length);
-    mediaElements.splice(targetIndex, 0, draggedMedia);
     isDragging = false;
     draggedMedia = null;
+    updateControlsState();
 }
 
 function handleMouseWheel(event) {
     if (mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
-        const zoomSpeed = 0.1;
+        const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements).filter(Boolean);
+        if (currentMedia.length === 0) return;
+
         const oldZoom = zoomLevel;
+        zoomLevel = constrain(zoomLevel - (event.deltaY > 0 ? 0.1 : -0.1) * oldZoom, 1, 5);
+
+        const refMedia = currentMedia[0].elt;
+        if (refMedia.width > 0) {
+            const mouseWorldX = (panX + (refMedia.width - refMedia.width / oldZoom) / 2) + (mouseX / width) * (refMedia.width / oldZoom);
+            const mouseWorldY = (panY + (refMedia.height - refMedia.height / oldZoom) / 2) + (mouseY / height) * (refMedia.height / oldZoom);
+            // FIXED: Use refMedia.width and refMedia.height instead of undefined variables
+            panX = mouseWorldX - (mouseX / width) * (refMedia.width / zoomLevel) - (refMedia.width - refMedia.width / zoomLevel) / 2;
+            panY = mouseWorldY - (mouseY / height) * (refMedia.height / zoomLevel) - (refMedia.height - refMedia.height / zoomLevel) / 2;
+        }
         
-        if (event.deltaY > 0) {
-            zoomLevel -= zoomSpeed * oldZoom;
-        } else {
-            zoomLevel += zoomSpeed * oldZoom;
-        }
-
-        const zoomSlider = select('#zoom-slider');
-        const minZoom = parseFloat(zoomSlider.elt.min);
-        const maxZoom = parseFloat(zoomSlider.elt.max);
-        zoomLevel = constrain(zoomLevel, minZoom, maxZoom);
-
-        if (mediaElements.length > 0) {
-            const refMedia = mediaElements[0].elt;
-            const mediaW = refMedia.width;
-            const mediaH = refMedia.height;
-            if (mediaW > 0) {
-                const mouseWorldX = (panX + (mediaW - mediaW / oldZoom) / 2) + (mouseX / width) * (mediaW / oldZoom);
-                const mouseWorldY = (panY + (mediaH - mediaH / oldZoom) / 2) + (mouseY / height) * (mediaH / oldZoom);
-                
-                panX = mouseWorldX - (mouseX / width) * (mediaW / zoomLevel) - (mediaW - mediaW / zoomLevel) / 2;
-                panY = mouseWorldY - (mouseY / height) * (mediaH / zoomLevel) - (mediaH - mediaH / zoomLevel) / 2;
-            }
-        }
-
-
         constrainPan();
-        
-        zoomSlider.value(zoomLevel);
+        select('#zoom-slider').value(zoomLevel);
         select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);
-        
         return false;
     }
 }
 
-
 function keyPressed() {
-    if (document.activeElement.tagName === 'INPUT') {
-        return;
-    }
-    if (keyCode === 32) { // Spacebar
-        togglePlayPause();
-        return false;
-    } else if (keyCode === LEFT_ARROW) {
-        stepFrame(-1);
-    } else if (keyCode === RIGHT_ARROW) {
-        stepFrame(1);
-    }
+    if (document.activeElement.tagName === 'INPUT') return;
+    if (keyCode === 32) { togglePlayPause(); return false; }
+    if (keyCode === LEFT_ARROW) stepFrame(-1);
+    if (keyCode === RIGHT_ARROW) stepFrame(1);
 }
 
 function windowResized() {
     let canvasContainer = document.getElementById('canvas-container');
     resizeCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
-    updateCanvasColorScheme()
+    updateCanvasColorScheme();
 }
