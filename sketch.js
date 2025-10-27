@@ -40,6 +40,15 @@ let panX = 0, panY = 0;
 let playbackRate = 1.0; // For playback speed
 const speedLevels = [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]; // Speed options
 
+// === COMPARE: STATE ===
+let comparePrimary = null;          // HTMLVideoElement
+let compareOnRight = true;          // compare overlay side (true = right side, false = left side)
+let compareSplitPos = 0.5;          // 0..1 shared ratio
+let isDraggingCompareSplit = false;
+let compareOverlayHitSize = 22;     // px size of corner hotspot
+let compareDragRect = null;         // rect we started the drag in
+
+
 // === A-B LOOP: STATE ===
 let abStartRatio = 0.0;   // 0..1 (maps to 0..duration)
 let abEndRatio = 1.0;   // 0..1 (maps to 0..duration)
@@ -105,6 +114,7 @@ function setup() {
     const helpBtn = select('#help-btn');
     frameRateInput = select('#framerate-input');
     const viewModeBtn = select('#view-mode-btn');
+    const compareSideBtn = select('#compare-side-btn');
 
     // Speed control elements
     const speedBtn = select('#speed-btn');
@@ -132,6 +142,7 @@ function setup() {
     zoomSlider.input(updateZoom);
     helpBtn.mousePressed(() => window.open('https://github.com/WhatDreamsCost/MediaSyncer', '_blank'));
     viewModeBtn.mousePressed(toggleViewMode);
+    compareSideBtn.mousePressed(toggleCompareSide);
 
     colsInput.input(() => updateGridLayout('cols'));
     rowsInput.input(() => updateGridLayout('rows'));
@@ -197,6 +208,7 @@ function draw() {
 
     if (currentViewMode === 'grid') {
         drawGridView();
+        renderCompareOverlay();
     } else {
         drawSplitView();
     }
@@ -207,6 +219,12 @@ function draw() {
 }
 
 // --- View Mode Management ---
+
+function toggleCompareSide() {
+    compareOnRight = !compareOnRight;
+    const btn = select('#compare-side-btn');
+    if (btn) btn.html(compareOnRight ? '◑' : '◐'); //◐▶ / ◑◀
+}
 
 function toggleViewMode() {
     currentViewMode = (currentViewMode === 'grid') ? 'split' : 'grid';
@@ -276,6 +294,10 @@ function clearGridMedia() {
     gridMediaElements = [];
     gridVideos = [];
     gridLayout = [];
+
+    // reset compare UI/state
+    comparePrimary = null;          // clear selected compare video
+    compareSplitPos = 0.5
 
     if (currentViewMode === 'grid') {
         masterVideo = null;
@@ -394,8 +416,13 @@ function handleFile(file) {
         if (file.targetSlot !== undefined) {
             position = file.targetSlot;
         } else {
+            // === SPLIT POSITION RESPECTS compareOnRight ===
             const destRect = getSplitViewDestRect();
-            position = (mouseX < destRect.x + destRect.w * splitSliderPos) ? 0 : 1;
+            const isLeftSide = mouseX < destRect.x + destRect.w * splitSliderPos;
+            // when compareOnRight is false, we swap which slot is visually left/right
+            position = compareOnRight
+                ? (isLeftSide ? 0 : 1)  // normal: slot 0 = left, slot 1 = right
+                : (isLeftSide ? 1 : 0); // flipped: slot 1 = left, slot 0 = right
         }
 
         if (splitMediaElements[position]) {
@@ -529,6 +556,155 @@ function constrainPan() {
 
 // --- Drawing Functions ---
 
+// === COMPARE: RENDER OVERLAY ===
+// In grid view, if a comparePrimary is selected, draw it on half of each tile
+// (zoom-aware, per-tile bars, hover highlight) ===
+function renderCompareOverlay() {
+    if (currentViewMode !== 'grid') return;
+
+    const rects = (typeof gridLayout !== 'undefined' && gridLayout.length)
+        ? gridLayout
+        : getGridRects();
+
+    // 1) If a primary is set, paint it on LEFT or RIGHT portion of each drawn media rect
+    if (comparePrimary && gridMediaElements.length > 0) {
+        const prim = comparePrimary; // HTMLVideoElement
+
+        // Source crop from the primary using the same zoom/pan model as drawMediaGrid()
+        const pWnat = prim.width  || 1;
+        const pHnat = prim.height || 1;
+        const sW = pWnat / zoomLevel;
+        const sH = pHnat / zoomLevel;
+        const sXbase = (pWnat - sW) / 2 + panX;
+        const sYbase = (pHnat - sH) / 2 + panY;
+
+        const ctx = drawingContext;
+
+        rects.forEach((r) => {
+            if (!r) return;
+
+            // local split position within THIS rect
+            const localSplitX = r.x + r.w * compareSplitPos;
+
+            // Clip to the side where compare video should appear
+            let clipX = r.x, clipW = r.w;
+            if (compareOnRight) {
+                const rightX = Math.max(r.x, localSplitX);
+                clipX = rightX;
+                clipW = (r.x + r.w) - rightX;
+            } else {
+                const leftW = Math.max(0, (localSplitX - r.x));
+                clipX = r.x;
+                clipW = leftW;
+            }
+            if (clipW <= 0) return;
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(clipX, r.y, clipW, r.h);
+            ctx.clip();
+
+            // Draw the primary into the SAME dest rect used for the native media (r.x,r.y,r.w,r.h)
+            image(prim, r.x, r.y, r.w, r.h, sXbase, sYbase, sW, sH);
+            ctx.restore();
+        });
+
+        // Per-cell split bars (synced ratio), thinner; blue on hover/drag
+        rects.forEach((r) => {
+            if (!r) return;
+            const localSplitX = r.x + r.w * compareSplitPos;
+
+            const isHover =
+                mouseX >= r.x && mouseX <= r.x + r.w &&
+                mouseY >= r.y && mouseY <= r.y + r.h &&
+                Math.abs(mouseX - localSplitX) <= 8;
+
+            if (isHover || isDraggingCompareSplit) {
+                // hint cursor while on any bar
+                cursor('ew-resize');
+            }
+
+            push();
+            // color: hover/drag = accent; otherwise subtle white
+            if (isHover || isDraggingCompareSplit) {
+                accentColor.setAlpha(230);
+                stroke(accentColor);
+                fill(accentColor);
+            } else {
+                stroke(255, 255, 255, 180);
+                fill(255, 255, 255, 200);
+            }
+            strokeWeight(1.25);
+            line(localSplitX, r.y, localSplitX, r.y + r.h);
+
+            // slim handle
+            noStroke();
+            // keep handle visible but small
+            const handleW = 10, handlePad = 30;
+
+            rect(localSplitX - handleW / 4, r.y + handlePad / 2, handleW / 2, handlePad, 1);
+            rect(localSplitX - handleW / 4, r.y + r.h - handlePad * 1.5, handleW / 2, handlePad, 1);
+
+            pop();
+        });
+    }
+
+    // 2) Hover badges (always show, even if no primary yet) — draw LAST so they sit on top
+    rects.forEach((r, i) => {
+        if (!r) return;
+        if (mouseX >= r.x && mouseX <= r.x + r.w && mouseY >= r.y && mouseY <= r.y + r.h) {
+            push();
+            noStroke();
+            fill(0, 0, 0, 120);
+            rect(r.x + r.w - compareOverlayHitSize, r.y + r.h - compareOverlayHitSize,
+                compareOverlayHitSize, compareOverlayHitSize, 4);
+            fill(255, 255, 255, 220);
+            textSize(12);
+            textAlign(CENTER, CENTER);
+            const isPrim = !!(comparePrimary && gridMediaElements[i] && gridMediaElements[i].elt === comparePrimary);
+            text(isPrim ? '✓' : '⇆', r.x + r.w - compareOverlayHitSize / 2, r.y + r.h - compareOverlayHitSize / 2);
+            pop();
+        }
+    });
+
+    // 3) Redraw filename + X on top so X is visible/clickable even over overlay
+    if (typeof hoveredMediaIndex !== 'undefined' && hoveredMediaIndex !== -1) {
+        const media = gridMediaElements[hoveredMediaIndex];
+        const pos = rects[hoveredMediaIndex];
+        if (media && pos && typeof drawHoverOverlay === 'function') {
+            drawHoverOverlay(media, pos);
+        }
+    }
+}
+
+
+// Derive grid rects to match your grid layout
+// If you already have something similar, feel free to reuse that instead.
+function getGridRects() {
+    const items = gridMediaElements.filter(Boolean);
+    const n = items.length;
+    if (n === 0) return [];
+
+    // Use your calculateBestGrid if rows/cols are auto; else respect manual rows/cols if set
+    let cols = gridCols || 0, rows = gridRows || 0;
+    if (!cols || !rows) {
+        const layout = calculateBestGrid(n, width / height);
+        cols = layout.cols;
+        rows = layout.rows;
+    }
+
+    const cellW = width / cols;
+    const cellH = height / rows;
+
+    const rects = [];
+    for (let i = 0; i < n; i++) {
+        const c = i % cols;
+        const r = Math.floor(i / cols);
+        rects.push({ x: c * cellW, y: r * cellH, w: cellW, h: cellH, index: i });
+    }
+    return rects;
+}
+
 function drawGridView() {
     if (isPanning) cursor('grabbing');
     else if (hoveredMediaIndex !== -1 && !isDragging) cursor('grab');
@@ -589,19 +765,23 @@ function drawSplitView() {
     else if (splitMediaElements.filter(Boolean).length < 2) cursor('pointer');
     else cursor('arrow');
 
-    const mediaLeft = splitMediaElements[0];
-    const mediaRight = splitMediaElements[1];
+    // map the two slots to left/right based on compareOnRight
+    const A = splitMediaElements[0] || null;
+    const B = splitMediaElements[1] || null;
+    const leftMedia = compareOnRight ? A : B;
+    const rightMedia = compareOnRight ? B : A;
+
     const placeholderText = "Drag & Drop or Click to Import Media";
 
-    if (mediaRight) {
-        drawMediaInSplit(mediaRight, 'right', destRect);
+    if (rightMedia) {
+        drawMediaInSplit(rightMedia, 'right', destRect);
+    }
+    if (leftMedia) {
+        drawMediaInSplit(leftMedia, 'left', destRect);
     }
 
-    if (mediaLeft) {
-        drawMediaInSplit(mediaLeft, 'left', destRect);
-    }
-
-    if (!mediaLeft) {
+    // left placeholder (if missing)
+    if (!leftMedia) {
         textAlign(CENTER, CENTER);
         textSize(18);
         noStroke();
@@ -609,7 +789,8 @@ function drawSplitView() {
         text(placeholderText, (destRect.x + sliderDrawX) / 2, destRect.y + destRect.h / 2);
     }
 
-    if (!mediaRight) {
+    // right placeholder (if missing)
+    if (!rightMedia) {
         textAlign(CENTER, CENTER);
         textSize(18);
         noStroke();
@@ -962,33 +1143,86 @@ function mousePressed() {
     if (currentViewMode === 'split') {
         const destRect = getSplitViewDestRect();
         const sliderDrawX = destRect.x + destRect.w * splitSliderPos;
-        if (splitMediaElements[0] && splitMediaElements[1] && mouseX > sliderDrawX - splitSliderHandleWidth / 2 && mouseX < sliderDrawX + splitSliderHandleWidth / 2 && mouseY > destRect.y && mouseY < destRect.y + destRect.h) {
+        if (
+            splitMediaElements[0] && splitMediaElements[1] &&
+            mouseX > sliderDrawX - splitSliderHandleWidth / 2 &&
+            mouseX < sliderDrawX + splitSliderHandleWidth / 2 &&
+            mouseY > destRect.y && mouseY < destRect.y + destRect.h
+        ) {
             isDraggingSplitSlider = true;
         }
-    } else { // Grid view logic
-        if (hoveredMediaIndex !== -1) {
-            const pos = gridLayout[hoveredMediaIndex];
-            const xButtonSize = 24;
-            if (mouseX > pos.x + pos.w - xButtonSize && mouseX < pos.x + pos.w && mouseY > pos.y && mouseY < pos.y + xButtonSize) {
-                const removedMedia = gridMediaElements.splice(hoveredMediaIndex, 1)[0];
-                if (removedMedia.type === 'video') gridVideos = gridVideos.filter(v => v !== removedMedia.elt);
-                removedMedia.elt.remove();
-                findLongestVideo();
-                updateControlsState();
-                hoveredMediaIndex = -1;
-                autoLayout();
+        return;
+    }
+
+    // --- Grid view logic below ---
+
+    // === COMPARE: PRIMARY PICKER (bottom-right corner) ===
+    if (gridMediaElements.filter(Boolean).length > 0) {
+        const rects = (typeof gridLayout !== 'undefined' && gridLayout.length) ? gridLayout : getGridRects();
+        for (let i = 0; i < rects.length; i++) {
+            const r = rects[i];
+            if (!r) continue;
+            if (!gridMediaElements[i]) continue;
+
+            // bottom-right hotspot
+            const hx = r.x + r.w - compareOverlayHitSize;
+            const hy = r.y + r.h - compareOverlayHitSize;
+            if (mouseX >= hx && mouseX <= r.x + r.w && mouseY >= hy && mouseY <= r.y + r.h) {
+                const item = gridMediaElements[i];
+                if (item && item.type === 'video') {
+                    const vid = item.elt; // HTMLVideoElement
+                    comparePrimary = (comparePrimary === vid) ? null : vid;
+                    return; // don't start drag-reorder underneath
+                }
+            }
+        }
+    }
+
+    // === COMPARE: START DRAG PER-CELL SPLIT BAR ===
+    if (comparePrimary) {
+        const rects = (typeof gridLayout !== 'undefined' && gridLayout.length) ? gridLayout : getGridRects();
+        for (let i = 0; i < rects.length; i++) {
+            const r = rects[i];
+            if (!r) continue;
+            if (mouseX < r.x || mouseX > r.x + r.w || mouseY < r.y || mouseY > r.y + r.h) continue;
+
+            const localSplitX = r.x + r.w * compareSplitPos;
+            if (Math.abs(mouseX - localSplitX) <= 8) {
+                isDraggingCompareSplit = true;
+                compareDragRect = r;
                 return;
             }
         }
-        if (hoveredMediaIndex !== -1) {
-            isDragging = true;
-            draggedMedia = gridMediaElements.splice(hoveredMediaIndex, 1)[0];
+    }
+
+
+    // --- Delete button / drag-reorder ---
+    if (hoveredMediaIndex !== -1) {
+        const pos = gridLayout[hoveredMediaIndex];
+        const xButtonSize = 24;
+        if (
+            mouseX > pos.x + pos.w - xButtonSize && mouseX < pos.x + pos.w &&
+            mouseY > pos.y && mouseY < pos.y + xButtonSize
+        ) {
+            const removedMedia = gridMediaElements.splice(hoveredMediaIndex, 1)[0];
+            if (removedMedia.type === 'video') gridVideos = gridVideos.filter(v => v !== removedMedia.elt);
+            removedMedia.elt.remove();
+            findLongestVideo();
+            updateControlsState();
+            hoveredMediaIndex = -1;
+            autoLayout();
+            return;
         }
+    }
+    if (hoveredMediaIndex !== -1) {
+        isDragging = true;
+        draggedMedia = gridMediaElements.splice(hoveredMediaIndex, 1)[0];
     }
 }
 
 function mouseDragged() {
     if (isDraggingSlider) return;
+
     if (isPanning) {
         panX -= (mouseX - lastMouseX);
         panY -= (mouseY - lastMouseY);
@@ -997,6 +1231,26 @@ function mouseDragged() {
         constrainPan();
         return false;
     }
+
+    // === COMPARE: DRAG PER-CELL SPLIT BAR ===
+    if (isDraggingCompareSplit) {
+        // use the rect we started in; if missing, fall back to rect under mouse
+        let r = compareDragRect;
+        if (!r) {
+            const rects = (typeof gridLayout !== 'undefined' && gridLayout.length) ? gridLayout : getGridRects();
+            for (let i = 0; i < rects.length; i++) {
+                const R = rects[i];
+                if (R && mouseX >= R.x && mouseX <= R.x + R.w && mouseY >= R.y && mouseY <= R.y + R.h) { r = R; break; }
+            }
+        }
+        if (r) {
+            const local = (mouseX - r.x) / r.w;
+            compareSplitPos = constrain(local, 0.02, 0.98);
+        }
+        return;
+    }
+
+    // --- Split view slider (unchanged) ---
     if (isDraggingSplitSlider) {
         const destRect = getSplitViewDestRect();
         splitSliderPos = constrain((mouseX - destRect.x) / destRect.w, 0, 1);
@@ -1006,8 +1260,15 @@ function mouseDragged() {
 function mouseReleased() {
     isDraggingSlider = false;
     isPanning = false;
+
+    // === COMPARE: STOP DRAG PER-CELL SPLIT BAR ===
+    isDraggingCompareSplit = false;
+    compareDragRect = null;
+
+    // --- Split view slider ---
     isDraggingSplitSlider = false;
 
+    // --- Drop reordering back in place ---
     if (currentViewMode === 'grid' && isDragging && draggedMedia) {
         let cols = gridCols > 0 ? gridCols : calculateBestGrid(gridMediaElements.length + 1, width / height).cols;
         const cellWidth = width / cols;
