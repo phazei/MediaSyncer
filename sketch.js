@@ -40,6 +40,15 @@ let panX = 0, panY = 0;
 let playbackRate = 1.0; // For playback speed
 const speedLevels = [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]; // Speed options
 
+// === A-B LOOP: STATE ===
+let abStartRatio = 0.0;   // 0..1 (maps to 0..duration)
+let abEndRatio = 1.0;   // 0..1 (maps to 0..duration)
+let abLoopEnabled = false;
+
+// Cached element refs
+let abStartSlider, abEndSlider, abToggleBtn, abRangeReadout;
+
+
 // Theme and color variables
 let frameRateInput;
 let canvasBgColor, canvasTextColor, canvasBorderColor, accentColor; // UPDATED: Added accentColor
@@ -55,7 +64,7 @@ function setup() {
     let canvasContainer = document.getElementById('canvas-container');
     canvas = createCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
     canvas.parent('canvas-container');
-    
+
     const canvasElt = canvas.elt;
     const canvasContainerElt = select('#canvas-container');
     canvasElt.addEventListener('dragover', (e) => {
@@ -77,6 +86,12 @@ function setup() {
     const nextFrameBtn = select('#next-frame-btn');
     const prevFrameBtn = select('#prev-frame-btn');
     const seekSlider = select('#seek-slider');
+    // === A-B LOOP: ELEMENTS ===
+    abStartSlider = select('#ab-start-slider');
+    abEndSlider = select('#ab-end-slider');
+    abToggleBtn = select('#ab-toggle-btn');
+    abRangeReadout = select('#ab-range-readout');
+
     const autoLayoutBtn = select('#auto-layout-btn');
     const clearGridBtn = select('#clear-grid-btn');
     const clearAllBtn = select('#clear-all-btn');
@@ -117,7 +132,7 @@ function setup() {
     zoomSlider.input(updateZoom);
     helpBtn.mousePressed(() => window.open('https://github.com/WhatDreamsCost/MediaSyncer', '_blank'));
     viewModeBtn.mousePressed(toggleViewMode);
-    
+
     colsInput.input(() => updateGridLayout('cols'));
     rowsInput.input(() => updateGridLayout('rows'));
 
@@ -125,10 +140,39 @@ function setup() {
     seekSlider.mouseReleased(() => { isSeeking = false; handleSeek(); });
     seekSlider.input(handleSeek);
 
+    // === A-B LOOP: LISTENERS ===
+    abStartSlider.input(() => {
+        abStartRatio = constrain(parseInt(abStartSlider.value()) / 1000, 0, 1);
+        // A must be <= B
+        if (abStartRatio > abEndRatio) {
+            abEndRatio = abStartRatio;
+            abEndSlider.value(Math.round(abEndRatio * 1000));
+        }
+        if (abLoopEnabled && isPlaying) clampPlayheadIntoAB();
+        updateABReadout();
+    });
+
+    abEndSlider.input(() => {
+        abEndRatio = constrain(parseInt(abEndSlider.value()) / 1000, 0, 1);
+        // B must be >= A
+        if (abEndRatio < abStartRatio) {
+            abStartRatio = abEndRatio;
+            abStartSlider.value(Math.round(abStartRatio * 1000));
+        }
+        if (abLoopEnabled && isPlaying) clampPlayheadIntoAB();
+        updateABReadout();
+    });
+
+    abToggleBtn.mousePressed(() => {
+        abLoopEnabled = !abLoopEnabled;
+        abToggleBtn.html(abLoopEnabled ? 'A-B Loop: On' : 'A-B Loop: Off');
+    });
+
+
     speedSlider.input(updatePlaybackSpeed);
     speedSlider.mousePressed(() => { isDraggingSlider = true; });
     zoomSlider.mousePressed(() => { isDraggingSlider = true; });
-    
+
     speedBtn.mousePressed(() => speedMenu.toggleClass('visible'));
 
     document.body.addEventListener('click', (event) => {
@@ -139,6 +183,12 @@ function setup() {
 
     if (isLooping) loopBtn.addClass('active');
     updateControlsState();
+
+    // === A-B LOOP: INIT UI ===
+    abStartSlider.value(0);
+    abEndSlider.value(1000);
+    updateABReadout();
+
 }
 
 // --- p5.js Draw Loop ---
@@ -150,7 +200,7 @@ function draw() {
     } else {
         drawSplitView();
     }
-    
+
     if (masterVideo && !isSeeking) {
         updateSliderAndTime();
     }
@@ -160,7 +210,7 @@ function draw() {
 
 function toggleViewMode() {
     currentViewMode = (currentViewMode === 'grid') ? 'split' : 'grid';
-    
+
     if (currentViewMode === 'split') {
         document.body.classList.add('split-view-active');
         select('#view-mode-btn').html('Grid View');
@@ -174,10 +224,13 @@ function toggleViewMode() {
     zoomLevel = 1.0;
     select('#zoom-slider').value(1);
     select('#zoom-display').html('1.0x');
-    
+
     findLongestVideo();
     updateControlsState();
     updatePlaybackSpeed();
+    // === A-B LOOP: REFRESH READOUT ON VIEW SWITCH ===
+    updateABReadout();
+
 }
 
 
@@ -223,7 +276,7 @@ function clearGridMedia() {
     gridMediaElements = [];
     gridVideos = [];
     gridLayout = [];
-    
+
     if (currentViewMode === 'grid') {
         masterVideo = null;
         updateControlsState();
@@ -357,7 +410,7 @@ function handleFile(file) {
             splitVideos.push(mediaEl);
         }
     }
-    
+
     findLongestVideo();
     updateControlsState();
 }
@@ -365,7 +418,7 @@ function handleFile(file) {
 
 function findLongestVideo() {
     const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
-    
+
     if (currentVideos.length === 0) {
         masterVideo = null;
         if (isPlaying) {
@@ -376,6 +429,8 @@ function findLongestVideo() {
         masterVideo = currentVideos.reduce((a, b) => (a.duration() > b.duration() ? a : b));
     }
     updateControlsState();
+    // === A-B LOOP: UPDATE READOUT WHEN MASTER CHANGES ===
+    updateABReadout();
 }
 
 function updatePlaybackSpeed() {
@@ -404,14 +459,28 @@ function togglePlayPause() {
 function handleSeek() {
     if (!masterVideo) return;
     const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
-    const seekTime = (select('#seek-slider').value() / 1000) * masterVideo.duration();
+
+    // === A-B LOOP: CLAMP SEEK INTO [A,B] ===
+    const duration = masterVideo.duration();
+    const rawSeekTime = (select('#seek-slider').value() / 1000) * duration;
+    let seekTime = rawSeekTime;
+    if (abLoopEnabled && isPlaying) {
+        const { A, B } = getABTimes();
+        seekTime = constrain(rawSeekTime, A, B);
+    } else {
+        seekTime = constrain(rawSeekTime, 0, duration);
+    }
+
     currentVideos.forEach(v => v.pause());
     let seekedCount = 0;
-    if (currentVideos.length === 0) { if (isPlaying) currentVideos.forEach(v => { if (v.time() < v.duration()) v.play(); }); return; }
+    if (currentVideos.length === 0) {
+        if (isPlaying) currentVideos.forEach(v => { if (v.time() < v.duration()) v.play(); });
+        return;
+    }
     currentVideos.forEach(v => {
         v.elt.onseeked = () => {
             seekedCount++;
-            v.elt.onseeked = null; 
+            v.elt.onseeked = null;
             if (seekedCount === currentVideos.length && isPlaying) {
                 currentVideos.forEach(v => { if (v.time() < v.duration()) v.play(); });
             }
@@ -419,6 +488,7 @@ function handleSeek() {
         v.time(min(seekTime, v.duration()));
     });
 }
+
 
 function stepFrame(direction) {
     if (!masterVideo) return;
@@ -444,7 +514,7 @@ function updateZoom() {
 function constrainPan() {
     const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements).filter(Boolean);
     if (currentMedia.length === 0) { panX = 0; panY = 0; return; }
-    
+
     const refMedia = currentMedia[0].elt;
     if (refMedia.width === 0 || isNaN(refMedia.width)) { panX = 0; panY = 0; return; }
 
@@ -477,7 +547,7 @@ function drawGridView() {
     }
 
     drawMediaGrid();
-    
+
     if (isDragging && draggedMedia) {
         const { elt } = draggedMedia;
         const aspect = elt.width / elt.height;
@@ -526,11 +596,11 @@ function drawSplitView() {
     if (mediaRight) {
         drawMediaInSplit(mediaRight, 'right', destRect);
     }
-    
+
     if (mediaLeft) {
         drawMediaInSplit(mediaLeft, 'left', destRect);
     }
-    
+
     if (!mediaLeft) {
         textAlign(CENTER, CENTER);
         textSize(18);
@@ -538,7 +608,7 @@ function drawSplitView() {
         fill(canvasTextColor);
         text(placeholderText, (destRect.x + sliderDrawX) / 2, destRect.y + destRect.h / 2);
     }
-    
+
     if (!mediaRight) {
         textAlign(CENTER, CENTER);
         textSize(18);
@@ -570,9 +640,9 @@ function drawMediaInSplit(media, side, destRect) {
         const dY = destRect.y;
         const dW = destRect.w * splitSliderPos;
         const dH = destRect.h;
-        
+
         const sW_clipped = sW * splitSliderPos;
-        
+
         if (dW > 0) image(elt, dX, dY, dW, dH, sX, sY, sW_clipped, sH);
 
     } else { // side === 'right'
@@ -625,15 +695,15 @@ function drawMediaGrid() {
             const sH = elt.height / zoomLevel;
             const sX = (elt.width - sW) / 2 + panX;
             const sY = (elt.height - sH) / 2 + panY;
-            
+
             const cellAspect = cellWidth / cellHeight, mediaAspect = sW / sH;
             let drawW = (mediaAspect > cellAspect) ? cellWidth : cellHeight * mediaAspect;
             let drawH = (mediaAspect > cellAspect) ? cellWidth / mediaAspect : cellHeight;
             const x = c * cellWidth + (cellWidth - drawW) / 2;
             const y = r * cellHeight + (cellHeight - drawH) / 2;
-            
+
             image(elt, x, y, drawW, drawH, sX, sY, sW, sH);
-            
+
             const currentPos = { x, y, w: drawW, h: drawH };
             gridLayout[mediaIndex] = currentPos;
             if (mediaIndex === hoveredMediaIndex && !isDragging) drawHoverOverlay(media, currentPos);
@@ -661,7 +731,7 @@ function drawHoverOverlay(media, pos) {
     rect(pos.x, pos.y, textW, 14 + textPadding * 2, 4, 0, 4, 0);
     fill(255);
     text(displayText, pos.x + textPadding, pos.y + textPadding + 2);
-    
+
     const xButtonX = pos.x + pos.w - xButtonSize;
     fill(0, 0, 0, 180);
     rect(xButtonX, pos.y, xButtonSize, xButtonSize, 0, 4, 0, 4);
@@ -735,8 +805,45 @@ function updateSliderAndTime() {
     if (isNaN(duration) || duration === 0) return;
     const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
     const frameRate = parseFloat(frameRateInput.value()) || 30;
-    
-    if (masterVideo.time() >= duration - (1 / frameRate)) {
+
+    // === AB PRE-FENCE WHILE PLAYING ===
+    if (abLoopEnabled && isPlaying && masterVideo) {
+        const { A, B } = getABTimes();
+        const eps = (typeof epsilonForRange === 'function') ? epsilonForRange(A, B) : (B - A) / 1000 || 0.008;
+        const t = masterVideo.time();
+        if (t < A - eps) {
+            setAllCurrentVideosTime(A);
+            // don't return; let the rest update the UI
+        }
+    }
+
+    // === A-B LOOP: RANGE LOOP CHECK (SEARCH FOR: RANGE LOOP CHECK) ===
+    const { A, B } = getABTimes();
+    const epsAB = epsilonForRange(A, B);
+    const epsFull = epsilonForRange(0, duration);
+    const nearEndAB = (t) => t >= (B - epsAB);
+    const nearEndFull = (t) => t >= (duration - epsFull);
+
+    // If A-B is enabled, we loop within [A,B]. Otherwise, use existing behavior.
+    if (abLoopEnabled && B > A && isPlaying && nearEndAB(masterVideo.time())) {
+        isSeeking = true;
+        currentVideos.forEach(v => v.pause());
+        let seekedCount = 0;
+        if (currentVideos.length === 0) { isSeeking = false; return; }
+        // AB DIRECT JUMP
+        currentVideos.forEach(v => {
+            v.elt.onseeked = () => {
+                seekedCount++;
+                v.elt.onseeked = null;
+                if (seekedCount === currentVideos.length) {
+                    if (isPlaying) currentVideos.forEach(v => v.play());
+                    isSeeking = false;
+                }
+            };
+            v.time(min(A, v.duration())); // jump straight to A
+        });
+        return;
+    } else if (!abLoopEnabled && isPlaying && nearEndFull(masterVideo.time())) {
         if (isLooping) {
             isSeeking = true;
             currentVideos.forEach(v => v.pause());
@@ -759,13 +866,15 @@ function updateSliderAndTime() {
             currentVideos.forEach(v => v.time(v.duration()));
         }
     } else if (isPlaying) {
+        // Existing guard to pause videos that have ended
         currentVideos.forEach(v => {
             if (v !== masterVideo && v.time() >= v.duration() && !v.elt.paused) {
                 v.pause(); v.time(v.duration());
             }
         });
     }
-    
+
+
     const currentTime = masterVideo.time();
     select('#seek-slider').value((currentTime / duration) * 1000);
     select('#timecode').html(`${formatTime(currentTime)} / ${formatTime(duration)}`);
@@ -774,7 +883,7 @@ function updateSliderAndTime() {
 
 function formatTime(time) {
     if (isNaN(time) || time === Infinity) return "00:00.00";
-    return `${String(Math.floor(time/60)).padStart(2,'0')}:${String(Math.floor(time%60)).padStart(2,'0')}.${String(Math.floor((time%1)*100)).padStart(2,'0')}`;
+    return `${String(Math.floor(time / 60)).padStart(2, '0')}:${String(Math.floor(time % 60)).padStart(2, '0')}.${String(Math.floor((time % 1) * 100)).padStart(2, '0')}`;
 }
 
 function updateControlsState() {
@@ -792,17 +901,55 @@ function updateControlsState() {
     select('#clear-all-btn').elt.disabled = !hasSplitMedia;
 }
 
+// === A-B LOOP: HELPERS ===
+
+function epsilonForRange(startT, endT) {
+    // slider has 1000 steps: one step worth of time, with a tiny floor
+    const range = Math.max(0, endT - startT);
+    return Math.max(range / 1000, 0.008); // ~8ms floor to avoid spin
+}
+
+function getABTimes() {
+    if (!masterVideo) return { A: 0, B: 0 };
+    const duration = masterVideo.duration() || 0;
+    return {
+        A: duration * abStartRatio,
+        B: duration * abEndRatio
+    };
+}
+
+function clampPlayheadIntoAB() {
+    if (!masterVideo) return;
+    const { A, B } = getABTimes();
+    const t = masterVideo.time();
+    if (t < A) setAllCurrentVideosTime(A);
+    else if (t > B) setAllCurrentVideosTime(B);
+}
+
+function setAllCurrentVideosTime(t) {
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    currentVideos.forEach(v => v.time(constrain(t, 0, v.duration())));
+}
+
+function updateABReadout() {
+    if (!abRangeReadout) return; // A-B LOOP: guard if elements not wired yet
+    if (!masterVideo) { abRangeReadout.html('A 00:00.00 → B 00:00.00'); return; }
+    const { A, B } = getABTimes();
+    abRangeReadout.html(`A ${formatTime(A)} → B ${formatTime(B)}`);
+}
+
+
 // --- Mouse and Keyboard Interaction ---
 
 function mousePressed() {
     if (isDraggingSlider) return;
     const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements);
-    
+
     if (currentMedia.filter(Boolean).length === 0 && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
         if (mouseButton === LEFT) select('#file-input').elt.click();
         return;
     }
-    
+
     if (mouseButton === CENTER && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
         isPanning = true;
         lastMouseX = mouseX;
@@ -889,7 +1036,7 @@ function handleMouseWheel(event) {
             panX = mouseWorldX - (mouseX / width) * (refMedia.width / zoomLevel) - (refMedia.width - refMedia.width / zoomLevel) / 2;
             panY = mouseWorldY - (mouseY / height) * (refMedia.height / zoomLevel) - (refMedia.height - refMedia.height / zoomLevel) / 2;
         }
-        
+
         constrainPan();
         select('#zoom-slider').value(zoomLevel);
         select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);

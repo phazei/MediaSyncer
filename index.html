@@ -1,24 +1,26 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Synchronized Media Player</title>
-    
+
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
+
     <!-- Link to external CSS file -->
     <link rel="stylesheet" href="style.css">
-    
+
     <!-- p5.js and p5.dom.js libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.dom.min.js"></script>
-    
+
 </head>
 <!-- Start in dark mode by default -->
+
 <body class="dark-mode">
 
     <div id="main-content">
@@ -68,7 +70,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- Right-aligned zoom control -->
                 <div class="zoom-control">
                     <button id="view-mode-btn" class="btn">Split View</button>
@@ -77,13 +79,21 @@
                     <span id="zoom-display">1.0x</span>
                 </div>
             </div>
-            <!-- Seek Bar -->
+
+            <!-- Seek Bar (A-B LOOP: WRAPPED SEEKBAR) -->
             <div class="controls-group">
+                <!-- Base playback position -->
                 <input type="range" id="seek-slider" class="slider" min="0" max="1000" value="0" disabled>
+
+                <!-- A marker (left) -->
+                <input type="range" id="ab-start-slider" class="slider" min="0" max="1000" value="0">
+
+                <!-- B marker (right) -->
+                <input type="range" id="ab-end-slider" class="slider" min="0" max="1000" value="1000">
             </div>
-            
-             <!-- Sub-Seekbar Controls -->
-             <div id="sub-seekbar-controls">
+
+            <!-- Sub-Seekbar Controls -->
+            <div id="sub-seekbar-controls">
                 <div class="framerate-control-wrapper">
                     <div class="layout-controls">
                         <label for="framerate-input">Frame Rate:</label>
@@ -96,6 +106,11 @@
                 </div>
                 <!-- Controls reordered and new help button added -->
                 <div class="right-controls-wrapper">
+                    <!-- A-B toggle -->
+                    <div style="display:flex; gap:8px; align-items:center; flex-direction: column;">
+                        <button id="ab-toggle-btn" class="btn">A-B Loop: Off</button>
+                        <span id="ab-range-readout">A 00:00.00 → B 00:00.00</span>
+                    </div>
                     <div class="import-controls-wrapper">
                         <input type="file" id="file-input" multiple accept="video/*,image/*" style="display: none;">
                         <button id="import-media-btn" class="btn">Import Media</button>
@@ -114,4 +129,5 @@
     <!-- Link to external JavaScript file -->
     <script src="sketch.js"></script>
 </body>
+
 </html>
