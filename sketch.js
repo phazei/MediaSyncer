@@ -45,8 +45,9 @@ let comparePrimary = null;          // HTMLVideoElement
 let compareOnRight = true;          // compare overlay side (true = right side, false = left side)
 let compareSplitPos = 0.5;          // 0..1 shared ratio
 let isDraggingCompareSplit = false;
-let compareOverlayHitSize = 22;     // px size of corner hotspot
+let compareOverlayHitSize = 25;     // px size of corner hotspot
 let compareDragRect = null;         // rect we started the drag in
+let xButtonSize = compareOverlayHitSize
 
 
 // === A-B LOOP: STATE ===
@@ -207,8 +208,9 @@ function draw() {
     background(canvasBgColor);
 
     if (currentViewMode === 'grid') {
-        drawGridView();
-        renderCompareOverlay();
+        drawGridView();          // tiles (with clipping)
+        renderCompareOverlay();  // primary paint + per-cell split bars ONLY
+        drawTileUI();            // filename/✕ + compare badge (always on top)
     } else {
         drawSplitView();
     }
@@ -562,119 +564,115 @@ function constrainPan() {
 function renderCompareOverlay() {
     if (currentViewMode !== 'grid') return;
 
-    const rects = (typeof gridLayout !== 'undefined' && gridLayout.length)
-        ? gridLayout
-        : getGridRects();
+    const rects = (gridLayout && gridLayout.length) ? gridLayout : getGridRects();
+    if (!comparePrimary || gridMediaElements.length === 0) return;
 
-    // 1) If a primary is set, paint it on LEFT or RIGHT portion of each drawn media rect
-    if (comparePrimary && gridMediaElements.length > 0) {
-        const prim = comparePrimary; // HTMLVideoElement
+    const prim = comparePrimary; // HTMLVideoElement
+    const pW = prim.width || 1;
+    const pH = prim.height || 1;
 
-        // Source crop from the primary using the same zoom/pan model as drawMediaGrid()
-        const pWnat = prim.width  || 1;
-        const pHnat = prim.height || 1;
-        const sW = pWnat / zoomLevel;
-        const sH = pHnat / zoomLevel;
-        const sXbase = (pWnat - sW) / 2 + panX;
-        const sYbase = (pHnat - sH) / 2 + panY;
+    // Compute source crop from zoom/pan using SAME logic as drawMediaGrid’s Stage B:
+    // We’ll recompute per cell because the fill threshold depends on each cell’s aspect.
 
-        const ctx = drawingContext;
+    const ctx = drawingContext;
 
-        rects.forEach((r) => {
-            if (!r) return;
-
-            // local split position within THIS rect
-            const localSplitX = r.x + r.w * compareSplitPos;
-
-            // Clip to the side where compare video should appear
-            let clipX = r.x, clipW = r.w;
-            if (compareOnRight) {
-                const rightX = Math.max(r.x, localSplitX);
-                clipX = rightX;
-                clipW = (r.x + r.w) - rightX;
-            } else {
-                const leftW = Math.max(0, (localSplitX - r.x));
-                clipX = r.x;
-                clipW = leftW;
-            }
-            if (clipW <= 0) return;
-
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(clipX, r.y, clipW, r.h);
-            ctx.clip();
-
-            // Draw the primary into the SAME dest rect used for the native media (r.x,r.y,r.w,r.h)
-            image(prim, r.x, r.y, r.w, r.h, sXbase, sYbase, sW, sH);
-            ctx.restore();
-        });
-
-        // Per-cell split bars (synced ratio), thinner; blue on hover/drag
-        rects.forEach((r) => {
-            if (!r) return;
-            const localSplitX = r.x + r.w * compareSplitPos;
-
-            const isHover =
-                mouseX >= r.x && mouseX <= r.x + r.w &&
-                mouseY >= r.y && mouseY <= r.y + r.h &&
-                Math.abs(mouseX - localSplitX) <= 8;
-
-            if (isHover || isDraggingCompareSplit) {
-                // hint cursor while on any bar
-                cursor('ew-resize');
-            }
-
-            push();
-            // color: hover/drag = accent; otherwise subtle white
-            if (isHover || isDraggingCompareSplit) {
-                accentColor.setAlpha(230);
-                stroke(accentColor);
-                fill(accentColor);
-            } else {
-                stroke(255, 255, 255, 180);
-                fill(255, 255, 255, 200);
-            }
-            strokeWeight(1.25);
-            line(localSplitX, r.y, localSplitX, r.y + r.h);
-
-            // slim handle
-            noStroke();
-            // keep handle visible but small
-            const handleW = 10, handlePad = 30;
-
-            rect(localSplitX - handleW / 4, r.y + handlePad / 2, handleW / 2, handlePad, 1);
-            rect(localSplitX - handleW / 4, r.y + r.h - handlePad * 1.5, handleW / 2, handlePad, 1);
-
-            pop();
-        });
-    }
-
-    // 2) Hover badges (always show, even if no primary yet) — draw LAST so they sit on top
-    rects.forEach((r, i) => {
+    rects.forEach((r, idx) => {
         if (!r) return;
-        if (mouseX >= r.x && mouseX <= r.x + r.w && mouseY >= r.y && mouseY <= r.y + r.h) {
-            push();
-            noStroke();
-            fill(0, 0, 0, 120);
-            rect(r.x + r.w - compareOverlayHitSize, r.y + r.h - compareOverlayHitSize,
-                compareOverlayHitSize, compareOverlayHitSize, 4);
-            fill(255, 255, 255, 220);
-            textSize(12);
-            textAlign(CENTER, CENTER);
-            const isPrim = !!(comparePrimary && gridMediaElements[i] && gridMediaElements[i].elt === comparePrimary);
-            text(isPrim ? '✓' : '⇆', r.x + r.w - compareOverlayHitSize / 2, r.y + r.h - compareOverlayHitSize / 2);
-            pop();
+
+        // === contain→fill→crop for THIS cell (mirror drawMediaGrid) ===
+        const cellW = r.w, cellH = r.h;
+        const mediaAspect = pW / pH;
+        const cellAspect = cellW / cellH;
+
+        // Contain size
+        const containW = (mediaAspect > cellAspect) ? cellW : cellH * mediaAspect;
+        const containH = (mediaAspect > cellAspect) ? cellW / mediaAspect : cellH;
+
+        // “Cover” size (fills cell)
+        const coverW = (mediaAspect < cellAspect) ? cellW : cellH * mediaAspect;
+        const coverH = (mediaAspect < cellAspect) ? cellW / mediaAspect : cellH;
+
+        const scaleToFill = (containW > 0) ? (coverW / containW) : 1; // ≥ 1
+        const z = Math.max(1, zoomLevel);
+
+        let destW, destH, cropZoom;
+
+        if (z <= scaleToFill + 1e-6) {
+            const t = smooth01((z - 1) / Math.max(1e-6, (scaleToFill - 1)));
+            const s = 1 + (scaleToFill - 1) * t;         // 1 → scaleToFill
+            destW = containW * s;
+            destH = containH * s;
+            cropZoom = 1;                                 // no source crop yet
+        } else {
+            destW = coverW;
+            destH = coverH;
+            cropZoom = z / scaleToFill;                   // true zoom via crop
         }
+
+        // Source crop using same pan
+        const sW = pW / cropZoom;
+        const sH = pH / cropZoom;
+        const sX = (pW - sW) / 2 + panX;
+        const sY = (pH - sH) / 2 + panY;
+
+        // Center within the cell
+        const dX = r.x + (cellW - destW) / 2;
+        const dY = r.y + (cellH - destH) / 2;
+
+        // Determine which half of the cell to show (clip region)
+        const localSplitX = r.x + r.w * compareSplitPos;
+        let clipX = r.x, clipW = r.w;
+        if (compareOnRight) {
+            const rightX = Math.max(r.x, localSplitX);
+            clipX = rightX;
+            clipW = (r.x + r.w) - rightX;
+        } else {
+            clipX = r.x;
+            clipW = Math.max(0, (localSplitX - r.x));
+        }
+        if (clipW <= 0) return;
+
+        // Clip to that half and draw with the SAME mapping as tiles
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(clipX, r.y, clipW, r.h);
+        ctx.clip();
+
+        image(prim, dX, dY, destW, destH, sX, sY, sW, sH);
+        ctx.restore();
     });
 
-    // 3) Redraw filename + X on top so X is visible/clickable even over overlay
-    if (typeof hoveredMediaIndex !== 'undefined' && hoveredMediaIndex !== -1) {
-        const media = gridMediaElements[hoveredMediaIndex];
-        const pos = rects[hoveredMediaIndex];
-        if (media && pos && typeof drawHoverOverlay === 'function') {
-            drawHoverOverlay(media, pos);
+    // Draw per-cell split bars + handles (unchanged), but compute bars against rects
+    rects.forEach((r) => {
+        if (!r) return;
+        const localSplitX = r.x + r.w * compareSplitPos;
+
+        const isHover =
+            mouseX >= r.x && mouseX <= r.x + r.w &&
+            mouseY >= r.y && mouseY <= r.y + r.h &&
+            Math.abs(mouseX - localSplitX) <= 8;
+
+        if (isHover || isDraggingCompareSplit) cursor('ew-resize');
+
+        push();
+        if (isHover || isDraggingCompareSplit) {
+            accentColor.setAlpha(230);
+            stroke(accentColor);
+            fill(accentColor);
+        } else {
+            stroke(255, 255, 255, 180);
+            fill(255, 255, 255, 200);
         }
-    }
+        strokeWeight(1.25);
+        line(localSplitX, r.y, localSplitX, r.y + r.h);
+
+        noStroke();
+        const handleW = 10, handlePad = 30;
+        rect(localSplitX - handleW / 4, r.y + handlePad / 2, handleW / 2, handlePad, 1);
+        rect(localSplitX - handleW / 4, r.y + r.h - handlePad * 1.5, handleW / 2, handlePad, 1);
+        pop();
+    });
+
 }
 
 
@@ -840,6 +838,13 @@ function drawMediaInSplit(media, side, destRect) {
 }
 
 
+// === SMOOTHSTEP HELPER ===
+function smooth01(x) {
+    // clamp 0..1 and smooth the edges
+    const t = constrain(x, 0, 1);
+    return t * t * (3 - 2 * t);
+}
+
 function drawMediaGrid() {
     let cols = gridCols > 0 ? gridCols : 1;
     let rows = gridRows > 0 ? gridRows : 1;
@@ -853,74 +858,183 @@ function drawMediaGrid() {
     }
     const cellWidth = width / cols;
     const cellHeight = height / rows;
+
     let dropPreviewIndex = -1;
     if (isDragging) {
         dropPreviewIndex = floor(mouseX / cellWidth) + floor(mouseY / cellHeight) * cols;
     }
+
     gridLayout = [];
     let mediaIndex = 0;
+
     for (let i = 0; i < cols * rows; i++) {
         const r = floor(i / cols);
         const c = i % cols;
+
+        const cellX = c * cellWidth;
+        const cellY = r * cellHeight;
+
         if (isDragging && i === dropPreviewIndex) {
             noStroke();
             fill(canvasTextColor.toString().replace(/,1\)$/, ',0.2)'));
-            rect(c * cellWidth, r * cellHeight, cellWidth, cellHeight, 8);
+            rect(cellX, cellY, cellWidth, cellHeight, 8);
             continue;
         }
+
         if (mediaIndex >= gridMediaElements.length) continue;
         const media = gridMediaElements[mediaIndex];
         const { elt } = media;
+
         if (elt.width > 0 && elt.height > 0) {
-            const sW = elt.width / zoomLevel;
-            const sH = elt.height / zoomLevel;
+            // --- contain→fill→crop mapping ---
+            const mediaAspect = elt.width / elt.height;
+            const cellAspect = cellWidth / cellHeight;
+
+            // contain size
+            const containW = (mediaAspect > cellAspect) ? cellWidth : cellHeight * mediaAspect;
+            const containH = (mediaAspect > cellAspect) ? cellWidth / mediaAspect : cellHeight;
+
+            // “cover” size (fills cell; other dimension may exceed cell)
+            const coverW = (mediaAspect < cellAspect) ? cellWidth : cellHeight * mediaAspect;
+            const coverH = (mediaAspect < cellAspect) ? cellWidth / mediaAspect : cellHeight;
+
+            const scaleToFill = (containW > 0) ? (coverW / containW) : 1; // ≥ 1
+            const z = max(1, zoomLevel);
+
+            let destW, destH;
+            let cropZoom; // 1 until we hit fill; >1 afterward
+
+            if (z <= scaleToFill + 1e-6) {
+                const t = smooth01((z - 1) / max(1e-6, (scaleToFill - 1))); // 0..1
+                const s = 1 + (scaleToFill - 1) * t;
+                destW = containW * s;
+                destH = containH * s;
+                cropZoom = 1;
+            } else {
+                destW = coverW;
+                destH = coverH;
+                cropZoom = z / scaleToFill;
+            }
+
+            // source crop (true zoom beyond fill), keep your pan
+            const sW = elt.width / cropZoom;
+            const sH = elt.height / cropZoom;
             const sX = (elt.width - sW) / 2 + panX;
             const sY = (elt.height - sH) / 2 + panY;
 
-            const cellAspect = cellWidth / cellHeight, mediaAspect = sW / sH;
-            let drawW = (mediaAspect > cellAspect) ? cellWidth : cellHeight * mediaAspect;
-            let drawH = (mediaAspect > cellAspect) ? cellWidth / mediaAspect : cellHeight;
-            const x = c * cellWidth + (cellWidth - drawW) / 2;
-            const y = r * cellHeight + (cellHeight - drawH) / 2;
+            // center within cell
+            const dX = cellX + (cellWidth - destW) / 2;
+            const dY = cellY + (cellHeight - destH) / 2;
 
-            image(elt, x, y, drawW, drawH, sX, sY, sW, sH);
+            // --- hard-clip to the cell so nothing overflows into neighbors ---
+            const ctx = drawingContext;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(cellX, cellY, cellWidth, cellHeight);
+            ctx.clip();
 
-            const currentPos = { x, y, w: drawW, h: drawH };
-            gridLayout[mediaIndex] = currentPos;
-            if (mediaIndex === hoveredMediaIndex && !isDragging) drawHoverOverlay(media, currentPos);
+            image(elt, dX, dY, destW, destH, sX, sY, sW, sH);
+
+            ctx.restore();
+
+            // For hover UI, use the cell rect (intuitive & non-overlapping)
+            const hitbox = { x: cellX, y: cellY, w: cellWidth, h: cellHeight };
+            gridLayout[mediaIndex] = hitbox;
         }
+
         mediaIndex++;
     }
 }
 
-function drawHoverOverlay(media, pos) {
-    const xButtonSize = 24;
+function drawTileUI() {
+    if (isDragging || isPanning || currentViewMode !== 'grid') return;
+    if (!gridLayout || gridLayout.length === 0) return;
+    if (hoveredMediaIndex < 0 || hoveredMediaIndex >= gridLayout.length) return;
+
+    const pos = gridLayout[hoveredMediaIndex];
+    const media = gridMediaElements[hoveredMediaIndex];
+    if (!media || !pos) return;
+
     const textPadding = 6;
+
+    // --- filename + close
     push();
     textAlign(LEFT, TOP);
     textSize(12);
-    let displayText = media.name;
-    if (textWidth(displayText) > pos.w - xButtonSize - (textPadding * 3)) {
-        while (textWidth(displayText + '...') > pos.w - xButtonSize - (textPadding * 3) && displayText.length > 0) {
-            displayText = displayText.slice(0, -1);
-        }
-        displayText += '...';
+
+    // truncate to fit alongside the close box
+    let displayText = media.name || '';
+    const availableTextW = pos.w - xButtonSize - (textPadding * 3);
+    while (displayText.length && textWidth(displayText + '...') > availableTextW) {
+        displayText = displayText.slice(0, -1);
     }
-    const textW = textWidth(displayText) + textPadding * 2;
+    if (displayText !== media.name) displayText += '...';
+    const labelW = min(textWidth(displayText) + textPadding * 2, availableTextW + textPadding * 2);
+
+    const ctx = drawingContext;
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.65)';
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+
+    // Name label (top-left)
+    stroke(255, 255, 255, 200);
+    strokeWeight(1.25);
     fill(0, 0, 0, 180);
+    rect(pos.x, pos.y, labelW, 14 + textPadding * 2, 4, 0, 4, 0);
+
     noStroke();
-    rect(pos.x, pos.y, textW, 14 + textPadding * 2, 4, 0, 4, 0);
     fill(255);
     text(displayText, pos.x + textPadding, pos.y + textPadding + 2);
 
+
+    // Close button (top-right)
     const xButtonX = pos.x + pos.w - xButtonSize;
+    stroke(255, 255, 255, 200);
+    strokeWeight(1.25);
     fill(0, 0, 0, 180);
     rect(xButtonX, pos.y, xButtonSize, xButtonSize, 0, 4, 0, 4);
+
+    noStroke();
     fill(255);
     textAlign(CENTER, CENTER);
     textSize(18);
     text('×', xButtonX + xButtonSize / 2, pos.y + xButtonSize / 2);
+
+    ctx.restore();
     pop();
+
+
+    // Compare badge (bottom-right)
+    const ctx2 = drawingContext;
+    const bx = pos.x + pos.w - compareOverlayHitSize;
+    const by = pos.y + pos.h - compareOverlayHitSize;
+
+    ctx2.save();
+    ctx2.shadowColor = 'rgba(0,0,0,0.65)';
+    ctx2.shadowBlur = 6;
+    ctx2.shadowOffsetX = 0;
+    ctx2.shadowOffsetY = 0;
+
+    stroke(255, 255, 255, 200);
+    strokeWeight(1.25);
+    fill(0, 0, 0, 160);
+    rect(bx, by, compareOverlayHitSize, compareOverlayHitSize, 4, 0, 4, 0);
+
+    noStroke();
+    fill(255, 255, 255, 230);
+    textSize(12);
+    textAlign(CENTER, CENTER);
+
+    // Consider anything selectable for compare;
+    const isPrim = !!(comparePrimary && gridMediaElements[hoveredMediaIndex] && gridMediaElements[hoveredMediaIndex].elt === comparePrimary);
+    text(isPrim ? '✓' : '⇆', bx + compareOverlayHitSize / 2, by + compareOverlayHitSize / 2);
+
+    ctx2.restore();
+    pop();
+
 }
 
 function updateHoveredMedia() {
@@ -1169,7 +1283,7 @@ function mousePressed() {
             const hy = r.y + r.h - compareOverlayHitSize;
             if (mouseX >= hx && mouseX <= r.x + r.w && mouseY >= hy && mouseY <= r.y + r.h) {
                 const item = gridMediaElements[i];
-                if (item && item.type === 'video') {
+                if (item) {
                     const vid = item.elt; // HTMLVideoElement
                     comparePrimary = (comparePrimary === vid) ? null : vid;
                     return; // don't start drag-reorder underneath
@@ -1199,7 +1313,6 @@ function mousePressed() {
     // --- Delete button / drag-reorder ---
     if (hoveredMediaIndex !== -1) {
         const pos = gridLayout[hoveredMediaIndex];
-        const xButtonSize = 24;
         if (
             mouseX > pos.x + pos.w - xButtonSize && mouseX < pos.x + pos.w &&
             mouseY > pos.y && mouseY < pos.y + xButtonSize
@@ -1282,27 +1395,63 @@ function mouseReleased() {
 }
 
 function handleMouseWheel(event) {
-    if (mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
-        const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements).filter(Boolean);
-        if (currentMedia.length === 0) return;
+    if (!(mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height)) return;
 
-        const oldZoom = zoomLevel;
-        zoomLevel = constrain(zoomLevel - (event.deltaY > 0 ? 0.1 : -0.1) * oldZoom, 1, 5);
+    const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements).filter(Boolean);
+    if (currentMedia.length === 0) return;
 
-        const refMedia = currentMedia[0].elt;
-        if (refMedia.width > 0) {
-            const mouseWorldX = (panX + (refMedia.width - refMedia.width / oldZoom) / 2) + (mouseX / width) * (refMedia.width / oldZoom);
-            const mouseWorldY = (panY + (refMedia.height - refMedia.height / oldZoom) / 2) + (mouseY / height) * (refMedia.height / oldZoom);
-            // FIXED: Use refMedia.width and refMedia.height instead of undefined variables
-            panX = mouseWorldX - (mouseX / width) * (refMedia.width / zoomLevel) - (refMedia.width - refMedia.width / zoomLevel) / 2;
-            panY = mouseWorldY - (mouseY / height) * (refMedia.height / zoomLevel) - (refMedia.height - refMedia.height / zoomLevel) / 2;
+    const oldZoom = zoomLevel;
+    zoomLevel = constrain(zoomLevel - (event.deltaY > 0 ? 0.1 : -0.1) * oldZoom, 1, 10);
+
+    const refMedia = currentMedia[0].elt;
+    if (refMedia.width > 0 && refMedia.height > 0) {
+        let u = 0.5, v = 0.5; // normalized focus point
+
+        if (currentViewMode === 'grid') {
+            // --- compute the grid like drawMediaGrid() so we can find the cell under the mouse ---
+            let cols = gridCols > 0 ? gridCols : 1;
+            let rows = gridRows > 0 ? gridRows : 1;
+            if (gridCols === 0 || gridRows === 0) {
+                const count = gridMediaElements.length + (isDragging ? 1 : 0);
+                const layout = calculateBestGrid(count, width / height);
+                cols = layout.cols;
+                rows = layout.rows;
+            }
+            const cellW = width / cols;
+            const cellH = height / rows;
+
+            const c = constrain(floor(mouseX / cellW), 0, cols - 1);
+            const r = constrain(floor(mouseY / cellH), 0, rows - 1);
+            const cellX = c * cellW;
+            const cellY = r * cellH;
+
+            // mouse normalized inside THIS cell (0..1)
+            u = constrain((mouseX - cellX) / cellW, 0, 1);
+            v = constrain((mouseY - cellY) / cellH, 0, 1);
+        } else {
+            // split view: normalize inside the split dest rect
+            const destRect = getSplitViewDestRect();
+            u = constrain((mouseX - destRect.x) / max(1, destRect.w), 0, 1);
+            v = constrain((mouseY - destRect.y) / max(1, destRect.h), 0, 1);
         }
 
-        constrainPan();
-        select('#zoom-slider').value(zoomLevel);
-        select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);
-        return false;
+        // --- keep the existing “zoom to cursor” math, but drive it with u/v ---
+        const oldW = refMedia.width / oldZoom;
+        const oldH = refMedia.height / oldZoom;
+        const newW = refMedia.width / zoomLevel;
+        const newH = refMedia.height / zoomLevel;
+
+        const mouseWorldX = (panX + (refMedia.width - oldW) / 2) + u * oldW;
+        const mouseWorldY = (panY + (refMedia.height - oldH) / 2) + v * oldH;
+
+        panX = mouseWorldX - u * newW - (refMedia.width - newW) / 2;
+        panY = mouseWorldY - v * newH - (refMedia.height - newH) / 2;
     }
+
+    constrainPan(); // still clamps against source size at this zoom
+    select('#zoom-slider').value(zoomLevel);
+    select('#zoom-display').html(`${Number(zoomLevel).toFixed(1)}x`);
+    return false;
 }
 
 function keyPressed() {
