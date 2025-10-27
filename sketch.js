@@ -177,6 +177,7 @@ function toggleViewMode() {
     
     findLongestVideo();
     updateControlsState();
+    updatePlaybackSpeed();
 }
 
 
@@ -380,7 +381,8 @@ function findLongestVideo() {
 function updatePlaybackSpeed() {
     playbackRate = speedLevels[parseInt(select('#speed-slider').value())];
     select('#speed-display').html(`${playbackRate.toFixed(2)}x`);
-    [...gridVideos, ...splitVideos].forEach(video => video.speed(playbackRate));
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    currentVideos.forEach(video => video.speed(playbackRate));
 }
 
 function togglePlayPause() {
