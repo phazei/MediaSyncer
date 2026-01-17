@@ -450,7 +450,12 @@ function handleFile(file) {
     }
 
     mediaEl.hide();
-    const newMediaObject = { elt: mediaEl, type: file.type, name: file.name };
+    const newMediaObject = { 
+        elt: mediaEl, 
+        type: file.type, 
+        name: file.name,
+        individuallyPaused: false // Track individual pause state
+    };
 
     if (currentViewMode === 'grid') {
         gridMediaElements.push(newMediaObject);
@@ -612,6 +617,7 @@ function applyAudioLevels() {
 function togglePlayPause() {
     if (!masterVideo) return;
     const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    const currentMedia = (currentViewMode === 'grid') ? gridMediaElements : splitMediaElements;
     const frameDuration = 1 / (parseFloat(frameRateInput.value()) || 30);
 
     if (!isPlaying && !isLooping && masterVideo.time() >= masterVideo.duration() - frameDuration) {
@@ -619,8 +625,17 @@ function togglePlayPause() {
         isPlaying = true;
     } else {
         isPlaying = !isPlaying;
-        if (isPlaying) currentVideos.forEach(v => { if (v.time() < v.duration()) v.play(); });
-        else currentVideos.forEach(v => v.pause());
+        if (isPlaying) {
+            currentVideos.forEach(v => {
+                const mediaObj = currentMedia.find(m => m && m.elt === v);
+                // Only play if not individually paused
+                if (mediaObj && !mediaObj.individuallyPaused && v.time() < v.duration()) {
+                    v.play();
+                }
+            });
+        } else {
+            currentVideos.forEach(v => v.pause());
+        }
     }
     select('#play-pause-btn').html(isPlaying ? 'Pause' : 'Play');
 }
@@ -1187,22 +1202,42 @@ function drawTileUI() {
     ctx2.shadowOffsetX = 0;
     ctx2.shadowOffsetY = 0;
 
+    const isPrim = !!(comparePrimary && gridMediaElements[hoveredMediaIndex] && gridMediaElements[hoveredMediaIndex].elt === comparePrimary);
+
     stroke(255, 255, 255, 200);
     strokeWeight(1.25);
-    fill(0, 0, 0, 160);
+    fill(isPrim ? 100 : 0, isPrim ? 180 : 0, 0, 160); // Green when selected
     rect(bx, by, compareOverlayHitSize, compareOverlayHitSize, 4, 0, 4, 0);
 
     noStroke();
     fill(255, 255, 255, 230);
     textSize(12);
     textAlign(CENTER, CENTER);
-
-    // Consider anything selectable for compare;
-    const isPrim = !!(comparePrimary && gridMediaElements[hoveredMediaIndex] && gridMediaElements[hoveredMediaIndex].elt === comparePrimary);
     text(isPrim ? '✓' : '⇆', bx + compareOverlayHitSize / 2, by + compareOverlayHitSize / 2);
 
     ctx2.restore();
     pop();
+
+    // Pause/Play button (top-left, under filename, only for videos)
+    if (media.type === 'video') {
+        const pauseButtonSize = 48; // 2x the other icons (which are ~24px)
+        const pauseButtonX = pos.x + 8;
+        const pauseButtonY = pos.y + (14 + textPadding * 2) + 8; // Below the filename
+        
+        push();
+        // No shadow, low opacity, no border
+        fill(0, 0, 0, 120); // Low opacity background
+        noStroke();
+        rect(pauseButtonX, pauseButtonY, pauseButtonSize, pauseButtonSize, 6);
+        
+        fill(255, 255, 255, 200);
+        textAlign(CENTER, CENTER);
+        textSize(24);
+        
+        // Show individual pause state only (not global playback state)
+        text(media.individuallyPaused ? '▶' : '❚❚', pauseButtonX + pauseButtonSize / 2, pauseButtonY + pauseButtonSize / 2);
+        pop();
+    }
 
 }
 
@@ -1268,6 +1303,7 @@ function updateSliderAndTime() {
     const duration = masterVideo.duration();
     if (isNaN(duration) || duration === 0) return;
     const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    const currentMedia = (currentViewMode === 'grid') ? gridMediaElements : splitMediaElements;
     const frameRate = parseFloat(frameRateInput.value()) || 30;
 
     // === AB PRE-FENCE WHILE PLAYING ===
@@ -1310,15 +1346,27 @@ function updateSliderAndTime() {
     } else if (!abLoopEnabled && isPlaying && nearEndFull(masterVideo.time())) {
         if (isLooping) {
             isSeeking = true;
+            
+            // Only seek videos that aren't individually paused
+            const videosToSeek = currentVideos.filter(v => {
+                const mediaObj = currentMedia.find(m => m && m.elt === v);
+                return !mediaObj.individuallyPaused;
+            });
+            
+            // Pause all videos
             currentVideos.forEach(v => v.pause());
+            
             let seekedCount = 0;
-            if (currentVideos.length === 0) { isSeeking = false; return; }
-            currentVideos.forEach(v => {
+            if (videosToSeek.length === 0) { isSeeking = false; return; }
+            
+            videosToSeek.forEach(v => {
                 v.elt.onseeked = () => {
                     seekedCount++;
                     v.elt.onseeked = null;
-                    if (seekedCount === currentVideos.length) {
-                        if (isPlaying) currentVideos.forEach(v => v.play());
+                    if (seekedCount === videosToSeek.length) {
+                        if (isPlaying) {
+                            videosToSeek.forEach(vid => vid.play());
+                        }
                         isSeeking = false;
                     }
                 };
@@ -1332,8 +1380,13 @@ function updateSliderAndTime() {
     } else if (isPlaying) {
         // Existing guard to pause videos that have ended
         currentVideos.forEach(v => {
+            const mediaObj = currentMedia.find(m => m && m.elt === v);
             if (v !== masterVideo && v.time() >= v.duration() && !v.elt.paused) {
                 v.pause(); v.time(v.duration());
+            }
+            // Ensure individually paused videos stay paused
+            if (mediaObj && mediaObj.individuallyPaused && !v.elt.paused) {
+                v.pause();
             }
         });
     }
@@ -1438,6 +1491,41 @@ function mousePressed() {
     }
 
     // --- Grid view logic below ---
+
+    // === PAUSE BUTTON: Individual video pause (top-left, under filename) ===
+    if (gridMediaElements.filter(Boolean).length > 0) {
+        const pauseButtonSize = 48;
+        const textPadding = 6;
+        
+        for (let i = 0; i < gridLayout.length; i++) {
+            const r = gridLayout[i];
+            if (!r) continue;
+            const item = gridMediaElements[i];
+            if (!item || item.type !== 'video') continue;
+            
+            // Only check if this is the hovered tile
+            if (i !== hoveredMediaIndex) continue;
+
+            const pauseButtonX = r.x + 8;
+            const pauseButtonY = r.y + (14 + textPadding * 2) + 8;
+            
+            if (mouseX >= pauseButtonX && mouseX <= pauseButtonX + pauseButtonSize &&
+                mouseY >= pauseButtonY && mouseY <= pauseButtonY + pauseButtonSize) {
+                // Toggle individual pause state
+                item.individuallyPaused = !item.individuallyPaused;
+                
+                if (item.individuallyPaused) {
+                    item.elt.pause();
+                } else {
+                    // Only play if global playback is active
+                    if (isPlaying) {
+                        item.elt.play();
+                    }
+                }
+                return; // don't process other clicks
+            }
+        }
+    }
 
     // === AUDIO: AUDIO SOURCE PICKER (bottom-right, left of compare) ===
     if (gridMediaElements.filter(Boolean).length > 0) {
