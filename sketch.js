@@ -40,6 +40,13 @@ let panX = 0, panY = 0;
 let playbackRate = 1.0; // For playback speed
 const speedLevels = [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]; // Speed options
 
+// Audio control variables
+let volumeLevel = 0.5; // Master volume (0-1, default 50%)
+let isMuted = true; // Mute state (default muted)
+let audioSource = null; // Current audio source video element (hover or locked)
+let lockedAudioSource = null; // Locked audio source (null = hover mode)
+let audioOverlayHitSize = 25; // px size of audio badge hotspot
+
 // === COMPARE: STATE ===
 let comparePrimary = null;          // HTMLVideoElement
 let compareOnRight = true;          // compare overlay side (true = right side, false = left side)
@@ -66,6 +73,8 @@ const moonIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
 const sunIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`;
 const speedIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
 const loopIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>`;
+const volumeIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
+const muteIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
 const helpIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
 
 
@@ -123,10 +132,19 @@ function setup() {
     const speedSlider = select('#speed-slider');
     const speedControlWrapper = select('#speed-control-wrapper');
 
+    // Volume control elements
+    const volumeBtn = select('#volume-btn');
+    const volumeMenu = select('#volume-menu');
+    const volumeSlider = select('#volume-slider');
+    const volumeControlWrapper = select('#volume-control-wrapper');
+
     // --- Initialize UI and Theme ---
     initializeTheme();
     speedBtn.html(speedIcon);
     loopBtn.html(loopIcon);
+    volumeBtn.html(muteIcon); // Start with mute icon (default muted)
+    volumeSlider.value(0.5); // Set slider to 50%
+    select('#volume-display').html('50%');
     helpBtn.html(helpIcon);
 
     // --- Assign Event Handlers ---
@@ -185,12 +203,25 @@ function setup() {
     speedSlider.mousePressed(() => { isDraggingSlider = true; });
     zoomSlider.mousePressed(() => { isDraggingSlider = true; });
 
+    volumeSlider.input(updateVolume);
+    volumeSlider.mousePressed(() => { isDraggingSlider = true; });
+
     speedBtn.mousePressed(() => speedMenu.toggleClass('visible'));
+    
+    // Volume button: click to toggle mute, hover to show menu
+    volumeBtn.mousePressed(toggleMute);
+    volumeBtn.elt.addEventListener('mouseenter', () => {
+        volumeMenu.addClass('visible');
+    });
+    volumeControlWrapper.elt.addEventListener('mouseleave', () => {
+        volumeMenu.removeClass('visible');
+    });
 
     document.body.addEventListener('click', (event) => {
         if (speedMenu.hasClass('visible') && !speedControlWrapper.elt.contains(event.target)) {
             speedMenu.removeClass('visible');
         }
+        // Volume menu is controlled by hover, not click
     });
 
     if (isLooping) loopBtn.addClass('active');
@@ -208,12 +239,16 @@ function draw() {
     background(canvasBgColor);
 
     if (currentViewMode === 'grid') {
+        updateAudioSource();     // Update audio based on hover/lock state
         drawGridView();          // tiles (with clipping)
         renderCompareOverlay();  // primary paint + per-cell split bars ONLY
         drawTileUI();            // filename/✕ + compare badge (always on top)
     } else {
+        updateSplitAudioSource(); // Update audio for split view
         drawSplitView();
     }
+
+    applyAudioLevels();          // Apply volume levels to all videos
 
     if (masterVideo && !isSeeking) {
         updateSliderAndTime();
@@ -300,6 +335,10 @@ function clearGridMedia() {
     // reset compare UI/state
     comparePrimary = null;          // clear selected compare video
     compareSplitPos = 0.5
+    
+    // reset audio state
+    audioSource = null;
+    lockedAudioSource = null;
 
     if (currentViewMode === 'grid') {
         masterVideo = null;
@@ -319,6 +358,10 @@ function clearSplitMedia() {
     splitMediaElements = [];
     splitVideos = [];
     splitSliderPos = 0.5;
+    
+    // reset audio state
+    audioSource = null;
+    lockedAudioSource = null;
 
     if (currentViewMode === 'split') {
         masterVideo = null;
@@ -467,6 +510,103 @@ function updatePlaybackSpeed() {
     select('#speed-display').html(`${playbackRate.toFixed(2)}x`);
     const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
     currentVideos.forEach(video => video.speed(playbackRate));
+}
+
+function updateVolume() {
+    volumeLevel = parseFloat(select('#volume-slider').value());
+    select('#volume-display').html(`${Math.round(volumeLevel * 100)}%`);
+    // Don't change mute state when adjusting slider
+    // If currently muted and user moves slider, we should unmute
+    if (isMuted && volumeLevel > 0) {
+        isMuted = false;
+    }
+    updateVolumeIcon();
+}
+
+function toggleMute() {
+    isMuted = !isMuted;
+    updateVolumeIcon();
+}
+
+function updateVolumeIcon() {
+    const volumeBtn = select('#volume-btn');
+    const isMutedOrZero = isMuted || volumeLevel === 0;
+    
+    // Update icon
+    volumeBtn.html(isMutedOrZero ? muteIcon : volumeIcon);
+    
+    // Update button styling: green when unmuted, grey when muted
+    if (isMutedOrZero) {
+        volumeBtn.removeClass('active');
+    } else {
+        volumeBtn.addClass('active');
+    }
+}
+
+function updateAudioSource() {
+    // In grid view: locked source takes priority, otherwise use hover
+    if (lockedAudioSource) {
+        audioSource = lockedAudioSource;
+    } else if (hoveredMediaIndex >= 0 && hoveredMediaIndex < gridMediaElements.length) {
+        const media = gridMediaElements[hoveredMediaIndex];
+        if (media && media.type === 'video') {
+            audioSource = media.elt;
+        } else {
+            audioSource = null;
+        }
+    } else {
+        audioSource = null;
+    }
+}
+
+function updateSplitAudioSource() {
+    // In split view: hover-based only, no locking
+    const destRect = getSplitViewDestRect();
+    const isLeftSide = mouseX < destRect.x + destRect.w * splitSliderPos;
+    
+    // Check if mouse is within the dest rect
+    if (mouseX >= destRect.x && mouseX <= destRect.x + destRect.w &&
+        mouseY >= destRect.y && mouseY <= destRect.y + destRect.h) {
+        
+        const A = splitMediaElements[0] || null;
+        const B = splitMediaElements[1] || null;
+        const leftMedia = compareOnRight ? A : B;
+        const rightMedia = compareOnRight ? B : A;
+        
+        if (isLeftSide && leftMedia && leftMedia.type === 'video') {
+            audioSource = leftMedia.elt;
+        } else if (!isLeftSide && rightMedia && rightMedia.type === 'video') {
+            audioSource = rightMedia.elt;
+        } else {
+            audioSource = null;
+        }
+    } else {
+        audioSource = null;
+    }
+}
+
+function applyAudioLevels() {
+    // Apply volume to all videos based on whether they're the audio source
+    const currentVideos = (currentViewMode === 'grid') ? gridVideos : splitVideos;
+    const currentMedia = (currentViewMode === 'grid') ? gridMediaElements : splitMediaElements;
+    
+    currentVideos.forEach(video => {
+        const mediaObj = currentMedia.find(m => m && m.elt === video);
+        if (!mediaObj) return;
+        
+        // Initialize individualVolume if not set
+        if (mediaObj.individualVolume === undefined) {
+            mediaObj.individualVolume = 1.0;
+        }
+        
+        // Set volume: full if this is the audio source (and not muted), 0 otherwise
+        if (audioSource === video) {
+            const effectiveVolume = isMuted ? 0 : (mediaObj.individualVolume * volumeLevel);
+            video.volume(effectiveVolume);
+        } else {
+            video.volume(0);
+        }
+    });
 }
 
 function togglePlayPause() {
@@ -1007,8 +1147,37 @@ function drawTileUI() {
     pop();
 
 
-    // Compare badge (bottom-right)
+    // Bottom-right badges: Audio badge (left) and Compare badge (right)
     const ctx2 = drawingContext;
+    
+    // Audio badge (only for videos)
+    if (media.type === 'video') {
+        const audioBx = pos.x + pos.w - (audioOverlayHitSize * 2) - 4; // 4px gap between badges
+        const audioBy = pos.y + pos.h - audioOverlayHitSize;
+        
+        ctx2.save();
+        ctx2.shadowColor = 'rgba(0,0,0,0.65)';
+        ctx2.shadowBlur = 6;
+        ctx2.shadowOffsetX = 0;
+        ctx2.shadowOffsetY = 0;
+        
+        const isAudioLocked = (lockedAudioSource === media.elt);
+        
+        stroke(255, 255, 255, 200);
+        strokeWeight(1.25);
+        fill(isAudioLocked ? 100 : 0, isAudioLocked ? 180 : 0, 0, 180); // Green when locked
+        rect(audioBx, audioBy, audioOverlayHitSize, audioOverlayHitSize, 4, 0, 0, 4);
+        
+        noStroke();
+        fill(255, 255, 255, 230);
+        textSize(16);
+        textAlign(CENTER, CENTER);
+        text('🔊', audioBx + audioOverlayHitSize / 2, audioBy + audioOverlayHitSize / 2);
+        
+        ctx2.restore();
+    }
+    
+    // Compare badge (rightmost)
     const bx = pos.x + pos.w - compareOverlayHitSize;
     const by = pos.y + pos.h - compareOverlayHitSize;
 
@@ -1269,6 +1438,32 @@ function mousePressed() {
     }
 
     // --- Grid view logic below ---
+
+    // === AUDIO: AUDIO SOURCE PICKER (bottom-right, left of compare) ===
+    if (gridMediaElements.filter(Boolean).length > 0) {
+        const rects = (typeof gridLayout !== 'undefined' && gridLayout.length) ? gridLayout : getGridRects();
+        for (let i = 0; i < rects.length; i++) {
+            const r = rects[i];
+            if (!r) continue;
+            const item = gridMediaElements[i];
+            if (!item || item.type !== 'video') continue;
+
+            // Audio badge hotspot (left of compare badge)
+            const audioHx = r.x + r.w - (audioOverlayHitSize * 2) - 4;
+            const audioHy = r.y + r.h - audioOverlayHitSize;
+            if (mouseX >= audioHx && mouseX <= audioHx + audioOverlayHitSize &&
+                mouseY >= audioHy && mouseY <= audioHy + audioOverlayHitSize) {
+                const vid = item.elt;
+                // Toggle lock: if already locked to this video, unlock. Otherwise, lock to this video.
+                if (lockedAudioSource === vid) {
+                    lockedAudioSource = null;
+                } else {
+                    lockedAudioSource = vid;
+                }
+                return; // don't start drag-reorder underneath
+            }
+        }
+    }
 
     // === COMPARE: PRIMARY PICKER (bottom-right corner) ===
     if (gridMediaElements.filter(Boolean).length > 0) {
