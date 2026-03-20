@@ -699,16 +699,13 @@ function constrainPan() {
     const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements).filter(Boolean);
     if (currentMedia.length === 0) { panX = 0; panY = 0; return; }
 
-    const refMedia = currentMedia[0].elt;
-    if (refMedia.width === 0 || isNaN(refMedia.width)) { panX = 0; panY = 0; return; }
+    // panX/panY are normalized (fractional) offsets: 0 = centered.
+    // The visible fraction at the current zoom is 1/zoomLevel,
+    // so the maximum offset before going past the edge is:
+    const maxPan = (1 - 1 / zoomLevel) / 2; // same for X and Y
 
-    const sW = refMedia.width / zoomLevel;
-    const sH = refMedia.height / zoomLevel;
-    const maxPanX = (refMedia.width - sW) / 2;
-    const maxPanY = (refMedia.height - sH) / 2;
-
-    panX = (maxPanX >= 0) ? constrain(panX, -maxPanX, maxPanX) : 0;
-    panY = (maxPanY >= 0) ? constrain(panY, -maxPanY, maxPanY) : 0;
+    panX = (maxPan >= 0) ? constrain(panX, -maxPan, maxPan) : 0;
+    panY = (maxPan >= 0) ? constrain(panY, -maxPan, maxPan) : 0;
 }
 
 // --- Drawing Functions ---
@@ -764,11 +761,11 @@ function renderCompareOverlay() {
             cropZoom = z / scaleToFill;                   // true zoom via crop
         }
 
-        // Source crop using same pan
+        // Source crop using same pan (panX/panY are normalized; scale to this media's pixels)
         const sW = pW / cropZoom;
         const sH = pH / cropZoom;
-        const sX = (pW - sW) / 2 + panX;
-        const sY = (pH - sH) / 2 + panY;
+        const sX = (pW - sW) / 2 + panX * pW;
+        const sY = (pH - sH) / 2 + panY * pH;
 
         // Center within the cell
         const dX = r.x + (cellW - destW) / 2;
@@ -964,10 +961,11 @@ function drawMediaInSplit(media, side, destRect) {
     const { elt } = media;
     if (!elt || elt.width === 0 || elt.height === 0) return;
 
+    // panX/panY are normalized (fractional); scale to this media's pixel dimensions
     const sW = elt.width / zoomLevel;
     const sH = elt.height / zoomLevel;
-    const sX = (elt.width - sW) / 2 + panX;
-    const sY = (elt.height - sH) / 2 + panY;
+    const sX = (elt.width - sW) / 2 + panX * elt.width;
+    const sY = (elt.height - sH) / 2 + panY * elt.height;
 
     if (side === 'left') {
         const dX = destRect.x;
@@ -1072,10 +1070,11 @@ function drawMediaGrid() {
             }
 
             // source crop (true zoom beyond fill), keep your pan
+            // panX/panY are normalized (fractional); scale to this media's pixel dimensions
             const sW = elt.width / cropZoom;
             const sH = elt.height / cropZoom;
-            const sX = (elt.width - sW) / 2 + panX;
-            const sY = (elt.height - sH) / 2 + panY;
+            const sX = (elt.width - sW) / 2 + panX * elt.width;
+            const sY = (elt.height - sH) / 2 + panY * elt.height;
 
             // center within cell
             const dX = cellX + (cellWidth - destW) / 2;
@@ -1620,8 +1619,15 @@ function mouseDragged() {
     if (isDraggingSlider) return;
 
     if (isPanning) {
-        panX -= (mouseX - lastMouseX);
-        panY -= (mouseY - lastMouseY);
+        // Convert screen-pixel drag delta to normalized pan units.
+        // Use the first video in the current mode as the reference for
+        // the screen-to-source mapping (keeps panning speed consistent).
+        const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements).filter(Boolean);
+        const ref = currentMedia.length > 0 ? currentMedia[0].elt : null;
+        const refW = (ref && ref.width > 0) ? ref.width : 1;
+        const refH = (ref && ref.height > 0) ? ref.height : 1;
+        panX -= (mouseX - lastMouseX) / refW;
+        panY -= (mouseY - lastMouseY) / refH;
         lastMouseX = mouseX;
         lastMouseY = mouseY;
         constrainPan();
@@ -1686,8 +1692,7 @@ function handleMouseWheel(event) {
     const oldZoom = zoomLevel;
     zoomLevel = constrain(zoomLevel - (event.deltaY > 0 ? 0.1 : -0.1) * oldZoom, 1, 10);
 
-    const refMedia = currentMedia[0].elt;
-    if (refMedia.width > 0 && refMedia.height > 0) {
+    {
         let u = 0.5, v = 0.5; // normalized focus point
 
         if (currentViewMode === 'grid') {
@@ -1718,17 +1723,20 @@ function handleMouseWheel(event) {
             v = constrain((mouseY - destRect.y) / max(1, destRect.h), 0, 1);
         }
 
-        // --- keep the existing “zoom to cursor” math, but drive it with u/v ---
-        const oldW = refMedia.width / oldZoom;
-        const oldH = refMedia.height / oldZoom;
-        const newW = refMedia.width / zoomLevel;
-        const newH = refMedia.height / zoomLevel;
+        // --- zoom-to-cursor math in normalized (resolution-independent) coordinates ---
+        // panX/panY are fractional: 0 = centered, range ±(1 - 1/zoom)/2
+        const oldW = 1 / oldZoom;   // old visible fraction
+        const oldH = 1 / oldZoom;
+        const newW = 1 / zoomLevel; // new visible fraction
+        const newH = 1 / zoomLevel;
 
-        const mouseWorldX = (panX + (refMedia.width - oldW) / 2) + u * oldW;
-        const mouseWorldY = (panY + (refMedia.height - oldH) / 2) + v * oldH;
+        // cursor position in normalized source space (0..1)
+        const mouseWorldX = (panX + (1 - oldW) / 2) + u * oldW;
+        const mouseWorldY = (panY + (1 - oldH) / 2) + v * oldH;
 
-        panX = mouseWorldX - u * newW - (refMedia.width - newW) / 2;
-        panY = mouseWorldY - v * newH - (refMedia.height - newH) / 2;
+        // solve for new panX/panY so cursor stays at the same world point
+        panX = mouseWorldX - u * newW - (1 - newW) / 2;
+        panY = mouseWorldY - v * newH - (1 - newH) / 2;
     }
 
     constrainPan(); // still clamps against source size at this zoom
