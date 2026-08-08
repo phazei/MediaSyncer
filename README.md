@@ -36,7 +36,8 @@ https://phazei.github.io/MediaSyncer/
 
 | Key / Action | Function |
 | :--- | :--- |
-| **SPACEBAR** | Play / Pause |
+| **SPACEBAR (tap)** | Play / Pause |
+| **SPACEBAR (hold) + Drag** | Pan Image (when zoomed) |
 | **Left Arrow** | Previous Frame |
 | **Right Arrow** | Next Frame |
 | **Scroll Wheel** | Zoom In / Out |

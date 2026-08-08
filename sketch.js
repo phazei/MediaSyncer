@@ -25,6 +25,8 @@ let isDragging = false;
 let draggedMedia = null; // The media element being dragged
 let hoveredMediaIndex = -1; // Index of media being hovered over
 let isPanning = false;
+let isSpaceHeld = false;      // space-hold = hand tool (Photoshop / After Effects convention)
+let spaceUsedForPan = false;  // set when a space-hold actually panned, so release doesn't toggle playback
 let lastMouseX = 0, lastMouseY = 0;
 let isDraggingSlider = false; // To prevent canvas interaction when using UI sliders
 
@@ -857,6 +859,7 @@ function getGridRects() {
 
 function drawGridView() {
     if (isPanning) cursor('grabbing');
+    else if (isSpaceHeld) cursor('grab');
     else if (hoveredMediaIndex !== -1 && !isDragging) cursor('grab');
     else if (gridMediaElements.length === 0 && !isDragging) cursor('pointer');
     else cursor('arrow');
@@ -911,6 +914,7 @@ function drawSplitView() {
 
     if (isDraggingSplitSlider) cursor('grabbing');
     else if (isPanning) cursor('grabbing');
+    else if (isSpaceHeld) cursor('grab');
     else if (isHoveringSlider && bothMediaLoaded) cursor('ew-resize');
     else if (splitMediaElements.filter(Boolean).length < 2) cursor('pointer');
     else cursor('arrow');
@@ -1462,12 +1466,15 @@ function mousePressed() {
     const currentMedia = (currentViewMode === 'grid' ? gridMediaElements : splitMediaElements);
 
     if (currentMedia.filter(Boolean).length === 0 && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
-        if (mouseButton === LEFT) select('#file-input').elt.click();
+        if (mouseButton === LEFT && !isSpaceHeld) select('#file-input').elt.click();
         return;
     }
 
-    if (mouseButton === CENTER && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
+    // Pan: middle-drag, or space-hold + left-drag for setups with no middle button.
+    if ((mouseButton === CENTER || (mouseButton === LEFT && isSpaceHeld)) &&
+        mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
         isPanning = true;
+        if (isSpaceHeld) spaceUsedForPan = true;
         lastMouseX = mouseX;
         lastMouseY = mouseY;
         return;
@@ -1747,10 +1754,27 @@ function handleMouseWheel(event) {
 
 function keyPressed() {
     if (document.activeElement.tagName === 'INPUT') return;
-    if (keyCode === 32) { togglePlayPause(); return false; }
+    // Space is overloaded: hold + drag = pan, tap = play/pause.
+    // The playback toggle therefore fires on release, in keyReleased().
+    if (keyCode === 32) { isSpaceHeld = true; return false; }
     if (keyCode === LEFT_ARROW) stepFrame(-1);
     if (keyCode === RIGHT_ARROW) stepFrame(1);
 }
+
+function keyReleased() {
+    if (keyCode !== 32) return;
+    const wasTap = isSpaceHeld && !spaceUsedForPan;
+    isSpaceHeld = false;
+    spaceUsedForPan = false;
+    if (wasTap && document.activeElement.tagName !== 'INPUT') { togglePlayPause(); return false; }
+}
+
+// A keyup is lost if the window loses focus mid-hold (alt-tab, remote session
+// switch), which would otherwise leave the hand tool stuck on.
+window.addEventListener('blur', () => {
+    isSpaceHeld = false;
+    spaceUsedForPan = false;
+});
 
 function windowResized() {
     let canvasContainer = document.getElementById('canvas-container');
